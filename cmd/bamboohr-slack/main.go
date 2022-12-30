@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/tls"
+	"embed"
 	"github.com/gookit/config"
 	"github.com/gookit/config/yaml"
 	"github.com/recipe/bamboohr-slack-bot/internal/database"
@@ -20,6 +21,9 @@ const CommandUsage = "These are available " + CommandName + " commands:\n" +
 	"`/" + CommandName + " install <org name> <api secret>` Install the BambooHR API token for your team. " +
 	"`<org name>` is the name of your organization as it is used in the BambooHR API."
 const SlackScope = "users.profile:write,users.profile:read,users:read.email,users:read,commands"
+
+//go:embed templates/*
+var Templates embed.FS
 
 func init() {
 	log.SetFormatter(&log.TextFormatter{})
@@ -92,7 +96,7 @@ func main() {
 			return
 		}
 		w.Header().Set("Content-Type", "text/html")
-		tpl := template.Must(template.ParseFiles("./templates/index.html"))
+		tpl := template.Must(template.ParseFS(Templates, "templates/index.html"))
 		_ = tpl.Execute(w, map[string]string{
 			"SlackClientID": url.QueryEscape(slackClientID),
 			"SlackScope":    SlackScope,
