@@ -1,4 +1,4 @@
-module github.com/recipe/go-bamboohr-slack
+module github.com/recipe/bamboohr-slack-bot
 
 go 1.19
 

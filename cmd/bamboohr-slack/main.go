@@ -4,7 +4,7 @@ import (
 	"crypto/tls"
 	"github.com/gookit/config"
 	"github.com/gookit/config/yaml"
-	"github.com/recipe/go-bamboohr-slack/internal/database"
+	"github.com/recipe/bamboohr-slack-bot/internal/database"
 	log "github.com/sirupsen/logrus"
 	"html/template"
 	"net/http"
