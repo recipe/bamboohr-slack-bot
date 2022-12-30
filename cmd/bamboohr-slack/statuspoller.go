@@ -81,13 +81,17 @@ func Run() error {
 		// Get all employees from the BambooHR
 		empList, err := bAPI.GetEmployeeList()
 		if err != nil {
-			return fmt.Errorf("unable to get a list of employees: %v", err)
+			log.Errorf("Unable to get a list of employees: %v", err)
+
+			continue
 		}
 		sAPI := slack.New(org.SlackToken.AccessToken)
 		// Get all users for the associated Slack workspace
 		list, err := sAPI.GetUsers()
 		if err != nil {
-			return err
+			log.Errorf("Unable to get a list of Slack users: %v", err)
+
+			continue
 		}
 		// Adjust an employee with the SlackUser object to process only employees
 		for _, user := range list {
@@ -105,7 +109,9 @@ func Run() error {
 		// Request employee time-offs from BambooHR
 		timeOffList, err := bAPI.TimeOffList(startDate, endDate)
 		if err != nil {
-			return err
+			log.Errorf("Unable to get a list of time-offs: %v", err)
+
+			continue
 		}
 		// Transforming the list to the following structure:
 		// [ EmployeeID => [ Date => TimeOffType ] ]
