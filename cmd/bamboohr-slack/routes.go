@@ -420,7 +420,7 @@ func ProcessInstallCommand(
 		return
 	}
 
-	log.Debug(
+	log.Debugf(
 		"Install: Trying to fetch users list from BambooHR (%s) validating API secret.",
 		callback.BambooHROrg,
 	)
