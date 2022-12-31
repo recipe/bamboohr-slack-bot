@@ -56,46 +56,12 @@ jobs:
         zip -9vr ../${{ steps.vars.outputs.asset_name }}.zip .
         popd || exit 1
 
-    - name: Upload a ZIP file to Artifacts
-      uses: actions/upload-artifact@v3
-      with:
-        name: ${{ steps.vars.outputs.asset_name }}.zip
-        path: ${{ steps.vars.outputs.asset_name }}.zip
-        if-no-files-found: error
-
-  release:
-    if: contains(github.ref, 'tags/')
-    needs: [build]
-    runs-on: ubuntu-latest
-    steps:
-    - name: Create Release
-      id: create_release
-      uses: actions/create-release@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: ${{ github.ref }}
-        release_name: Release ${{ github.ref }}
-        draft: false
-        prerelease: false
-
-  publish:
-    if: contains(github.ref, 'tags/')
-    needs: [release]
-    runs-on: ubuntu-latest
-
-    steps:
-    - uses: actions/checkout@v2
-      with:
-        fetch-depth: 0
-
-    - uses: actions/download-artifact@v3
-      with:
-        path: release
-
-    - name: Display structure of downloaded files
-      run: ls -R
-      working-directory: release
+#    - name: Upload a ZIP file to Artifacts
+#      uses: actions/upload-artifact@v3
+#      with:
+#        name: ${{ steps.vars.outputs.asset_name }}.zip
+#        path: ${{ steps.vars.outputs.asset_name }}.zip
+#        if-no-files-found: error
 
     - name: Upload binaries to release
       uses: svenstaro/upload-release-action@v2
@@ -105,6 +71,49 @@ jobs:
         tag: ${{ github.ref }}
         overwrite: true
         file_glob: true
+
+#  release:
+#    if: contains(github.ref, 'tags/')
+#    needs: [build]
+#    runs-on: ubuntu-latest
+#    steps:
+#    - name: Create Release
+#      id: create_release
+#      uses: actions/create-release@v1
+#      env:
+#        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+#      with:
+#        tag_name: ${{ github.ref }}
+#        release_name: Release ${{ github.ref }}
+#        draft: false
+#        prerelease: false
+#
+#  publish:
+#    if: contains(github.ref, 'tags/')
+#    needs: [release]
+#    runs-on: ubuntu-latest
+#
+#    steps:
+#    - uses: actions/checkout@v2
+#      with:
+#        fetch-depth: 0
+#
+#    - uses: actions/download-artifact@v3
+#      with:
+#        path: release
+#
+#    - name: Display structure of downloaded files
+#      run: ls -R
+#      working-directory: release
+#
+#    - name: Upload binaries to release
+#      uses: svenstaro/upload-release-action@v2
+#      with:
+#        repo_token: ${{ secrets.GITHUB_TOKEN }}
+#        file: release/*
+#        tag: ${{ github.ref }}
+#        overwrite: true
+#        file_glob: true
 
 
 
