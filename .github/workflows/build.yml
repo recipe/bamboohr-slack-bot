@@ -104,7 +104,7 @@ jobs:
 
     - name: Display structure of downloaded files
       id: artifacts
-      run: echo "upload_files=$(`ls -1 artifacts`)" >> $GITHUB_OUTPUT
+      run: echo "upload_files=$('ls -1 artifacts')" >> $GITHUB_OUTPUT
       working-directory: artifacts
 
     - name: Check output
