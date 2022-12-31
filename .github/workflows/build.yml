@@ -86,7 +86,7 @@ jobs:
 
   publish:
     if: contains(github.ref, 'tags/')
-    needs: [release]
+    needs: [release, build]
     strategy:
       matrix:
         goos: [linux, darwin]
