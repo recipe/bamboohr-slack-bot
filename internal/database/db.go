@@ -89,7 +89,7 @@ func newCFB8(block cipher.Block, iv []byte, decrypt bool) cipher.Stream {
 
 func New() (db *leveldb.DB) {
 	var path string
-	for _, p := range [2]string{"/opt/bamboohr-slack/db", "."} {
+	for _, p := range [2]string{"/opt/bamboohr-slack-bot/db", "."} {
 		if unix.Access(p, unix.W_OK) == nil {
 			path = p + "/bsdb"
 

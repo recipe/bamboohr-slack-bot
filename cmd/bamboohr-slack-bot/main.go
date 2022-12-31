@@ -50,7 +50,7 @@ func main() {
 	if err != nil {
 		homeDir = "."
 	}
-	configDestinations := [3]string{homeDir, ".", "/etc/bamboohr-slack"}
+	configDestinations := [3]string{homeDir, ".", "/etc/bamboohr-slack-bot"}
 	for _, file := range configDestinations {
 		err = config.LoadFiles(file + "/config.yml")
 		if err == nil {

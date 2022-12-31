@@ -14,4 +14,4 @@ fmt:
 #	go list ./... | grep -v /vendor/ | xargs -L1 golint -set_exit_status
 
 build:
-	go build -o bin/bamboohr-slack ./cmd/bamboohr-slack
+	go build -o bin/bamboohr-slack-bot ./cmd/bamboohr-slack-bot
