@@ -103,20 +103,20 @@ jobs:
       GOOS: ${{ matrix.goos }}
       GOARCH: ${{ matrix.goarch }}
 
-      steps:
-      - name: Set output
-        id: vars
-        run: echo "asset_name=bamboohr-slack-bot_${GITHUB_REF#refs/*/}_${GOOS}_${GOARCH}" >> $GITHUB_OUTPUT
+    steps:
+    - name: Set output
+      id: vars
+      run: echo "asset_name=bamboohr-slack-bot_${GITHUB_REF#refs/*/}_${GOOS}_${GOARCH}" >> $GITHUB_OUTPUT
 
-      - uses: actions/checkout@v1
-        uses: actions/download-artifact@v1
-        with:
-          name: ${{ steps.vars.outputs.asset_name }}.zip
+    - uses: actions/checkout@v1
+      uses: actions/download-artifact@v1
+      with:
+        name: ${{ steps.vars.outputs.asset_name }}.zip
 
-      - uses: softprops/action-gh-release@v1
-        if: startsWith(github.ref, 'refs/tags/')
-        with:
-          files: ${{ steps.vars.outputs.asset_name }}.zip
+    - uses: softprops/action-gh-release@v1
+      if: startsWith(github.ref, 'refs/tags/')
+      with:
+        files: ${{ steps.vars.outputs.asset_name }}.zip
 
 
 
