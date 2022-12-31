@@ -26,6 +26,19 @@ jobs:
       - name: Set env
         run: echo "ASSET_NAME=bamboohr-slack-bot_${GITHUB_REF#refs/*/}_${GOOS}_${GOARCH}" >> $GITHUB_ENV
 
+      - name: Set output
+        id: vars
+        run: |
+          echo "tag=${GITHUB_REF#refs/*/}" >> $GITHUB_OUTPUT
+          echo "asset_name=bamboohr-slack-bot_${GITHUB_REF#refs/*/}_${GOOS}_${GOARCH}" >> $GITHUB_OUTPUT
+
+      - name: Check output
+        env:
+          ASSET_NAME: ${{ steps.vars.outputs.asset_name }}
+        run: |
+          echo $ASSET_NAME
+
+
       - name: Set up Go
         uses: actions/setup-go@v3
         with:
@@ -43,7 +56,7 @@ jobs:
           cp bin/bamboohr-slack-bot ./build_assets
           cp -v config.yml-sample ./build_assets
 
-      - name: Create ZIP archive
+      - name: Create a ZIP archive
         run: |
           pushd build_assets || exit 1
           zip -9vr ../${ASSET_NAME}.zip .
@@ -55,11 +68,11 @@ jobs:
           openssl dgst -sha256 $FILE | sed 's/([^)]*)//g' >>$DGST
           openssl dgst -sha512 $FILE | sed 's/([^)]*)//g' >>$DGST
 
-      - name: Upload ZIP file to Artifacts
+      - name: Upload a ZIP file to Artifacts
         uses: actions/upload-artifact@v3
         with:
-          name: ${ASSET_NAME}.zip
-          path: ${ASSET_NAME}.zip
+          name: ${{ steps.vars.outputs.asset_name }}.zip
+          path: ${{ steps.vars.outputs.asset_name }}.zip
 
 
 
