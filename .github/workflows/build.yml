@@ -6,7 +6,23 @@ on:
       - '*'
 
 jobs:
+  release:
+    if: contains(github.ref, 'tags/')
+    runs-on: ubuntu-latest
+    steps:
+    - name: Create release
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ github.ref }}
+        release_name: Release ${{ github.ref }}
+        draft: true
+        prerelease: false
+
   build:
+    needs: [release]
     strategy:
       matrix:
         goos: [linux, darwin]
@@ -56,61 +72,21 @@ jobs:
         zip -9vr ../${ASSET_NAME}.zip .
         popd || exit 1
         FILE=./${ASSET_NAME}.zip
-        DGST=$FILE.dgst
-        openssl dgst -md5    $FILE | sed 's/([^)]*)//g' >>$DGST
-        openssl dgst -sha1   $FILE | sed 's/([^)]*)//g' >>$DGST
-        openssl dgst -sha256 $FILE | sed 's/([^)]*)//g' >>$DGST
-        openssl dgst -sha512 $FILE | sed 's/([^)]*)//g' >>$DGST
 
-    - name: Upload a ZIP file to Artifacts
-      uses: actions/upload-artifact@v3
-      with:
-        name: ${{ steps.vars.outputs.asset_name }}.zip
-        path: ${{ steps.vars.outputs.asset_name }}.zip
+#    - name: Upload a ZIP file to Artifacts
+#      uses: actions/upload-artifact@v3
+#      with:
+#        name: ${{ steps.vars.outputs.asset_name }}.zip
+#        path: ${{ steps.vars.outputs.asset_name }}.zip
 
-  release:
-    if: contains(github.ref, 'tags/')
-    needs: [build]
-    runs-on: ubuntu-latest
-    steps:
-    - name: Create Release
-      id: create_release
-      uses: actions/create-release@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: ${{ github.ref }}
-        release_name: Release ${{ github.ref }}
-        draft: false
-        prerelease: false
-
-  publish:
-    if: contains(github.ref, 'tags/')
-    needs: [release, build]
-    strategy:
-      matrix:
-        goos: [linux, darwin]
-        goarch: [amd64]
-
-    runs-on: ubuntu-latest
-    env:
-      GOOS: ${{ matrix.goos }}
-      GOARCH: ${{ matrix.goarch }}
-
-    steps:
-    - name: Set output
-      id: vars
-      run: echo "asset_name=bamboohr-slack-bot_${GITHUB_REF#refs/*/}_${GOOS}_${GOARCH}" >> $GITHUB_OUTPUT
-
-    - uses: actions/download-artifact@v3
-      with:
-        name: ${{ steps.vars.outputs.asset_name }}.zip
-        path: ${{ steps.vars.outputs.asset_name }}.zip
-
-    - uses: softprops/action-gh-release@v1
+    - name: Publish an artifact to the release
+      uses: softprops/action-gh-release@v1
       if: startsWith(github.ref, 'refs/tags/')
       with:
         files: ${{ steps.vars.outputs.asset_name }}.zip
+
+
+
 
 
 
