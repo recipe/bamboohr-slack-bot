@@ -103,13 +103,20 @@ jobs:
         path: artifacts
 
     - name: Display structure of downloaded files
-      run: ls -R
+      id: artifacts
+      run: echo "upload_files=$(`ls -1 artifacts`)" >> $GITHUB_OUTPUT
       working-directory: artifacts
+
+    - name: Check output
+      env:
+        UPLOAD_FILES: ${{ steps.artifacts.outputs.upload_files }}
+      run: |
+        echo $UPLOAD_FILES
 
     - uses: softprops/action-gh-release@v1
       if: startsWith(github.ref, 'refs/tags/')
       with:
-        files: $("ls -1 artifacts")
+        files: ${{ steps.artifacts.outputs.upload_files }}
 
 
 
