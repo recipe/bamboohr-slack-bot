@@ -9,7 +9,7 @@ jobs:
   build:
     strategy:
       matrix:
-        goos: [linux, darwin]
+        goos: [linux]
         goarch: [amd64]
 
     runs-on: ubuntu-latest
@@ -53,7 +53,7 @@ jobs:
     - name: Create a ZIP archive
       run: |
         pushd build_assets || exit 1
-        zip -9vr ../${ASSET_NAME}.zip .
+        zip -9vr ../${{ steps.vars.outputs.asset_name }}.zip .
         popd || exit 1
 
     - name: Upload a ZIP file to Artifacts
@@ -61,6 +61,7 @@ jobs:
       with:
         name: ${{ steps.vars.outputs.asset_name }}.zip
         path: ${{ steps.vars.outputs.asset_name }}.zip
+        if-no-files-found: error
 
   release:
     if: contains(github.ref, 'tags/')
@@ -92,9 +93,9 @@ jobs:
       with:
         path: artifacts
 
-#    - name: Display structure of downloaded files
-#      run: ls -R
-#      working-directory: artifacts
+    - name: Display structure of downloaded files
+      run: ls -R
+      working-directory: artifacts
 
     - uses: softprops/action-gh-release@v1
       if: startsWith(github.ref, 'refs/tags/')
