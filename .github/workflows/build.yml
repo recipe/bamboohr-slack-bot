@@ -75,7 +75,6 @@ jobs:
         path: ${{ steps.vars.outputs.asset_name }}.zip
 
   release:
-    name: Create Github Release
     if: contains(github.ref, 'tags/')
     needs: [build]
     runs-on: ubuntu-latest
@@ -94,11 +93,16 @@ jobs:
   publish:
     if: contains(github.ref, 'tags/')
     needs: [release]
-    runs-on: ubuntu-latest
     strategy:
       matrix:
         goos: [linux, darwin]
         goarch: [amd64, arm64]
+
+    runs-on: ubuntu-latest
+    env:
+      GOOS: ${{ matrix.goos }}
+      GOARCH: ${{ matrix.goarch }}
+
       steps:
       - name: Set output
         id: vars
