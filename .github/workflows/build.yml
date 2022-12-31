@@ -68,11 +68,11 @@ jobs:
           openssl dgst -sha256 $FILE | sed 's/([^)]*)//g' >>$DGST
           openssl dgst -sha512 $FILE | sed 's/([^)]*)//g' >>$DGST
 
-      - name: Upload a ZIP file to Artifacts
-        uses: actions/upload-artifact@v3
-        with:
-          name: ${{ steps.vars.outputs.asset_name }}.zip
-          path: ${{ steps.vars.outputs.asset_name }}.zip
+#      - name: Upload a ZIP file to Artifacts
+#        uses: actions/upload-artifact@v3
+#        with:
+#          name: ${{ steps.vars.outputs.asset_name }}.zip
+#          path: ${{ steps.vars.outputs.asset_name }}.zip
 
       - name: Create Release
         id: create_release
@@ -85,16 +85,11 @@ jobs:
           draft: false
           prerelease: false
 
-      - name: Upload Release Asset
-        id: upload-release-asset
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Release
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
         with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ${{ steps.vars.outputs.asset_name }}.zip
-          asset_name: ${{ steps.vars.outputs.asset_name }}.zip
-          asset_content_type: application/zip
+          files: ${{ steps.vars.outputs.asset_name }}.zip
 
 
 
