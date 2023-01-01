@@ -34,7 +34,7 @@ dpkg -i ~/bot/bamboohr-slack-bot_0.0.1-1.deb
 Configuration
 --
 Set the config for the application:
-```
+```bash
 cp /etc/bamboohr-slack-bot/config.yml-sample /etc/bamboohr-slack-bot/config.yml
 ```
 
@@ -45,7 +45,7 @@ If you want the application to work over the HTTPS, you should generate the SSL 
 You may generate either a self-signed certificate or install [Let's encrypt](https://letsencrypt.org/) certificate.
 
 To start the service run the following command:
-```
+```bash
 systemctl start bamboohr-slack-bot
 ```
 
