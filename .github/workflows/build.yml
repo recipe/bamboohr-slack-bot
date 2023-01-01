@@ -70,7 +70,7 @@ jobs:
         pushd release || exit 1
         dpkg-deb -v --build "debian/${BOT}_${RELEASE_VERSION}-1"
         popd || exit 1
-        mv -v "${PKG}_${RELEASE_VERSION}-1" release
+        mv -v "${PKG}_${RELEASE_VERSION}-1.deb" release
 
     - name: Clean up
       run: rm -frv release/debian
