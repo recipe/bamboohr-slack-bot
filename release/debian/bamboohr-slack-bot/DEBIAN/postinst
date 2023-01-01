@@ -1,0 +1,11 @@
+#!/bin/bash
+
+set -e
+
+# Set a cryptokey with a random string
+T="$(openssl rand -base64 48)"
+sed -i "s#cryptokey.*#cryptokey: \"$T\"#" /etc/bamboohr-slack-bot/config.json-sample
+
+systemctl enable bamboohr-slack-bot
+systemctl daemon-reload
+systemctl restart rsyslog

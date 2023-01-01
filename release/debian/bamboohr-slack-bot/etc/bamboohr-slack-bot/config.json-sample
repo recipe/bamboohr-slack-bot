@@ -1,0 +1,23 @@
+server_endpoint: "localhost:443"
+slack_client_id: ""
+slack_client_secret: ""
+slack_signing_secret: ""
+cryptokey: "64 random ascii characters"
+ssl_key: ""
+ssl_cert: ""
+unknown_type_icon: ":grey_question:"
+log_level: debug
+types:
+  # Time off type list is ordered by the priority. If there are two different time-offs for the
+  # same day, it will select one listed first.
+  # [BambooHR time off type, Slack status text, Slack status emoji]
+  - ["Overtime Work", "Overtime work", ":bee:"]
+  - ["Vacation", "On holiday", ":palm_tree:"]
+  - ["Unpaid Day Off", "Day off", ":family:"]
+  - ["Paternity/Maternity Leave", "Parental leave", ":family:"]
+  - ["Training", "On training", ":mortar_board:"]
+  - ["Sick", "Out sick", ":face_with_thermometer:"]
+  - ["Remote Work", "Working remotely", ":house:"]
+  - ["Office work", "At the office", ":office:"]
+  - ["Business trip", "Business trip", ":airplane:"]
+  - ["Bereavement", "Bereavement leave", ":pray:"]

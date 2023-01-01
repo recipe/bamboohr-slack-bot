@@ -9,13 +9,14 @@ jobs:
   build:
     strategy:
       matrix:
-        goos: [linux, darwin]
-        goarch: [amd64, arm64]
+        goos: [linux]
+        goarch: [amd64]
 
     runs-on: ubuntu-latest
     env:
       GOOS: ${{ matrix.goos }}
       GOARCH: ${{ matrix.goarch }}
+      BOT: bamboohr-slack-bot
 
     steps:
     - name: Checkout
@@ -25,12 +26,16 @@ jobs:
 
     - name: Set output
       id: vars
-      run: echo "asset_name=bamboohr-slack-bot_${GITHUB_REF#refs/*/}_${GOOS}_${GOARCH}" >> $GITHUB_OUTPUT
+      run: |
+        echo "release_version=${GITHUB_REF#refs/*/}" >> $GITHUB_OUTPUT
+        echo "asset_name=${BOT}_${GITHUB_REF#refs/*/}_${GOOS}_${GOARCH}" >> $GITHUB_OUTPUT
 
     - name: Check output
       env:
+        RELEASE_VERSION: ${{ steps.vars.outputs.release_version }}
         ASSET_NAME: ${{ steps.vars.outputs.asset_name }}
       run: |
+        echo $RELEASE_VERSION
         echo $ASSET_NAME
 
     - name: Set up Go
@@ -46,13 +51,24 @@ jobs:
 
     - name: Prepare a package
       run: |
-        mkdir -p ./build_assets
-        cp bin/bamboohr-slack-bot ./build_assets
-        cp -v config.yml-sample ./build_assets
+        cp -v "bin/${BOT}" release
+        cp -v config.yml-sample release
+        export PKG="release/debian/${BOT}"
+        mkdir -p "${PKG}/opt/${BOT}/bin"
+        cp -v "bin/${BOT}" "${PKG}/opt/${BOT}/bin"
+        \cp -fv config.yml-sample "${PKG}/etc/${BOT}"
+        sed -i "s/Version:.*/Version: ${RELEASE_VERSION}/" "${PKG}/DEBIAN/control"
+        sed -i "s/Architecture:.*/Architecture: ${GOARCH}/" "${PKG}/DEBIAN/control"
+        chmod -v u+x "${PKG}/opt/${BOT}/bin/${BOT}" "${PKG}/DEBIAN/postinst" "${PKG}/DEBIAN/postrm"
+        mv "${PKG}" "${PKG}_${VERSION}"
+        pushd release || exit 1
+        dpkg-deb --build "debian/${BOT}_${VERSION}"
+        rm -fr debian
+        popd || exit 1
 
     - name: Create a ZIP archive
       run: |
-        pushd build_assets || exit 1
+        pushd release || exit 1
         zip -9vr ../${{ steps.vars.outputs.asset_name }}.zip .
         popd || exit 1
 

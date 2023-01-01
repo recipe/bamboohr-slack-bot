@@ -1,0 +1,8 @@
+Package: bamboohr-slack-bot
+Version: %VERSION%
+Section: base
+Priority: optional
+Architecture: %ARCH%
+Depends:
+Maintainer: recipe <recipe@ukr.net>
+Description: BambooHR <-> Slack bot keeps user profile statuses in sync with your BambooHR account.

@@ -1,0 +1,13 @@
+/var/log/bamboohr-slack-bot.log {
+        su root syslog
+        size 1M
+        missingok
+        rotate 7
+        compress
+        notifempty
+        create 0600 syslog adm
+        sharedscripts
+        postrotate
+                systemctl restart bamboohr-slack-bot
+        endscript
+}
