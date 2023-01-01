@@ -50,6 +50,8 @@ jobs:
       run: make build
 
     - name: Prepare a package
+      env:
+        RELEASE_VERSION: ${{ steps.vars.outputs.release_version }}
       run: |
         cp -v "bin/${BOT}" release
         cp -v config.yml-sample release
