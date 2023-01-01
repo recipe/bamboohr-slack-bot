@@ -1,0 +1,15 @@
+[Unit]
+Description=BambooHR <-> Slack integration
+
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/opt/bamboohr-slack-bot
+ExecStart=/opt/bamboohr-slack-bot/bin/bamboohr-slack-bot
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=bamboohr-slack-bot
+
+[Install]
+WantedBy=multi-user.target
