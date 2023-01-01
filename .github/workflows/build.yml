@@ -9,8 +9,8 @@ jobs:
   build:
     strategy:
       matrix:
-        goos: [linux]
-        goarch: [amd64]
+        goos: [linux, darwin]
+        goarch: [amd64, arm64]
 
     runs-on: ubuntu-latest
     env:
@@ -50,11 +50,15 @@ jobs:
       run: make build
 
     - name: Prepare a package
-      env:
-        RELEASE_VERSION: ${{ steps.vars.outputs.release_version }}
       run: |
         cp -v "bin/${BOT}" release
         cp -v config.yml-sample release
+
+    - name: Build a debian package for linux
+      if: matrix.goos == 'linux'
+      env:
+        RELEASE_VERSION: ${{ steps.vars.outputs.release_version }}
+      run: |
         export PKG="release/debian/${BOT}"
         mkdir -p "${PKG}/opt/${BOT}/bin"
         cp -v "bin/${BOT}" "${PKG}/opt/${BOT}/bin"
@@ -67,7 +71,9 @@ jobs:
         dpkg-deb -v --build "debian/${BOT}_${RELEASE_VERSION}-1"
         popd || exit 1
         mv -v "${PKG}_${RELEASE_VERSION}-1" release
-        rm -frv release/debian
+
+    - name: Clean up
+      run: rm -frv release/debian
 
     - name: Create a ZIP archive
       run: |
