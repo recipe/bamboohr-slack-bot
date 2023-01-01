@@ -62,11 +62,12 @@ jobs:
         sed -i "s/Version:.*/Version: ${RELEASE_VERSION}/" "${PKG}/DEBIAN/control"
         sed -i "s/Architecture:.*/Architecture: ${GOARCH}/" "${PKG}/DEBIAN/control"
         chmod -v u+x "${PKG}/opt/${BOT}/bin/${BOT}" "${PKG}/DEBIAN/postinst" "${PKG}/DEBIAN/postrm"
-        mv "${PKG}" "${PKG}_${RELEASE_VERSION}-1"
+        mv -v "${PKG}" "${PKG}_${RELEASE_VERSION}-1"
         pushd release || exit 1
         dpkg-deb -v --build "debian/${BOT}_${RELEASE_VERSION}-1"
-        rm -frv debian
         popd || exit 1
+        mv -v "${PKG}_${RELEASE_VERSION}-1" release
+        rm -frv release/debian
 
     - name: Create a ZIP archive
       run: |
