@@ -20,8 +20,23 @@ type TimeOffType struct {
 	Icon         string
 }
 
+type TimeOff struct {
+	Type  *TimeOffType
+	Start string
+	End   string
+}
+
 // TimeOffTypeList is the list of the known time-off types that are defined in the config.yml
 type TimeOffTypeList map[string]TimeOffType
+
+// FormatDate formats the date in the "YYYY-MM-DD" form to a specified layout format
+func FormatDate(date string, layout string) (string, error) {
+	t, err := time.Parse("2006-01-02", date)
+	if err != nil {
+		return "", err
+	}
+	return t.Format(layout), nil
+}
 
 // Strtotime parses a formatted time string "YYYY-MM-DD HH:mm:ss" and returns the Unix timestamp.
 // The string is considered to be provided in UTC time zone.
@@ -115,13 +130,13 @@ func Run() error {
 		}
 		// Transforming the list to the following structure:
 		// [ EmployeeID => [ Date => TimeOffType ] ]
-		var toList map[int]map[string]TimeOffType
-		toList = make(map[int]map[string]TimeOffType)
+		var toList map[int]map[string]TimeOff
+		toList = make(map[int]map[string]TimeOff)
 		for _, timeOff := range timeOffList {
 			for date := range timeOff.Dates {
 				if startDate <= date && date <= endDate {
 					if _, ok := toList[timeOff.EmployeeID]; !ok {
-						toList[timeOff.EmployeeID] = make(map[string]TimeOffType)
+						toList[timeOff.EmployeeID] = make(map[string]TimeOff)
 					}
 					t, ok := timeOffTypeList[timeOff.Type.Name]
 					if !ok {
@@ -132,11 +147,16 @@ func Run() error {
 							Icon:         unknownTimeOffTypeIcon,
 						}
 					}
-					if toList[timeOff.EmployeeID][date].BambooHRType == "" ||
-						toList[timeOff.EmployeeID][date].OrderNumber > t.OrderNumber {
+					if toList[timeOff.EmployeeID][date].Type == nil ||
+						toList[timeOff.EmployeeID][date].Type.OrderNumber > t.OrderNumber {
 						// If there are two different time-offs for the same day,
 						// it will select one listed first in the config.yml
-						toList[timeOff.EmployeeID][date] = t
+						to := TimeOff{
+							Type:  &t,
+							Start: timeOff.Start,
+							End:   timeOff.End,
+						}
+						toList[timeOff.EmployeeID][date] = to
 					}
 				}
 			}
@@ -167,16 +187,18 @@ func Run() error {
 				return fmt.Errorf("unable to convert the date (%s) to the unix timestamp: %s", userDate, err)
 			}
 			expectedStatusExpiration = expectedStatusExpiration - int64(emp.SlackUser.TZOffset)
+			dateHumanReadable, _ := FormatDate(timeOffToApply.End, "Monday, 02 Jan")
 
 			// Produce a who is out message for the /whoisout Slack command for caching purposes.
-			whoIsOutMessage = append(whoIsOutMessage, fmt.Sprintf("<@%s> (%s) %s %s",
+			whoIsOutMessage = append(whoIsOutMessage, fmt.Sprintf("<@%s> (%s) %s %s to %s",
 				emp.SlackUser.ID,
 				emp.SlackUser.RealName,
-				timeOffToApply.Text,
-				timeOffToApply.Icon,
+				timeOffToApply.Type.Text,
+				timeOffToApply.Type.Icon,
+				dateHumanReadable,
 			))
 
-			if emp.SlackUser.Profile.StatusEmoji == timeOffToApply.Icon &&
+			if emp.SlackUser.Profile.StatusEmoji == timeOffToApply.Type.Icon &&
 				int64(emp.SlackUser.Profile.StatusExpiration) == expectedStatusExpiration {
 				log.WithFields(log.Fields{
 					"SlackID":    emp.SlackUser.ID,
@@ -191,17 +213,17 @@ func Run() error {
 			}
 
 			log.WithFields(log.Fields{
-				"Status":     timeOffToApply.Text,
+				"Status":     timeOffToApply.Type.Text,
 				"SlackID":    emp.SlackUser.ID,
 				"EmployeeID": emp.EmployeeID,
 				"TZOffset":   emp.SlackUser.TZOffset,
-				"Emoji":      timeOffToApply.Icon,
+				"Emoji":      timeOffToApply.Type.Icon,
 				"Date":       userDate,
 				"Exp":        expectedStatusExpiration,
 				"PrevStatus": emp.SlackUser.Profile.StatusText,
 				"PrevEmoji":  emp.SlackUser.Profile.StatusEmoji,
 				"PrevExp":    emp.SlackUser.Profile.StatusExpiration,
-			}).Infof("Setting the '%s' status for %s.", timeOffToApply.Text, emp.SlackUser.RealName)
+			}).Infof("Setting the '%s' status for %s.", timeOffToApply.Type.Text, emp.SlackUser.RealName)
 
 			if (emp.SlackUser.IsAdmin || emp.SlackUser.IsOwner) && emp.SlackUser.ID != org.SlackAdminUserID {
 				//If a user is the admin we have to try to use his own token, if it exists, to avoid permission errors.
@@ -210,16 +232,16 @@ func Run() error {
 					sAdminAPI := slack.New(adminToken.AccessToken)
 					_ = sAdminAPI.SetUserCustomStatusWithUser(
 						emp.SlackUser.ID,
-						timeOffToApply.Text,
-						timeOffToApply.Icon,
+						timeOffToApply.Type.Text,
+						timeOffToApply.Type.Icon,
 						expectedStatusExpiration,
 					)
 				}
 			} else {
 				_ = sAPI.SetUserCustomStatusWithUser(
 					emp.SlackUser.ID,
-					timeOffToApply.Text,
-					timeOffToApply.Icon,
+					timeOffToApply.Type.Text,
+					timeOffToApply.Type.Icon,
 					expectedStatusExpiration,
 				)
 			}
