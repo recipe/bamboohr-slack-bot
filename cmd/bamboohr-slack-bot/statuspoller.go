@@ -29,6 +29,15 @@ type TimeOff struct {
 // TimeOffTypeList is the list of the known time-off types that are defined in the config.yml
 type TimeOffTypeList map[string]TimeOffType
 
+// FormatDate formats the date in the "YYYY-MM-DD" form to a specified layout format
+func FormatDate(date string, layout string) (string, error) {
+	t, err := time.Parse("2006-01-02", date)
+	if err != nil {
+		return "", err
+	}
+	return t.Format(layout), nil
+}
+
 // Strtotime parses a formatted time string "YYYY-MM-DD HH:mm:ss" and returns the Unix timestamp.
 // The string is considered to be provided in UTC time zone.
 func Strtotime(str string) (int64, error) {
@@ -178,15 +187,15 @@ func Run() error {
 				return fmt.Errorf("unable to convert the date (%s) to the unix timestamp: %s", userDate, err)
 			}
 			expectedStatusExpiration = expectedStatusExpiration - int64(emp.SlackUser.TZOffset)
+			dateHumanReadable, _ := FormatDate(timeOffToApply.End, "Monday, 02 Jan")
 
 			// Produce a who is out message for the /whoisout Slack command for caching purposes.
-			whoIsOutMessage = append(whoIsOutMessage, fmt.Sprintf("<@%s> (%s) %s %s from %s to %s",
+			whoIsOutMessage = append(whoIsOutMessage, fmt.Sprintf("<@%s> (%s) %s %s to %s",
 				emp.SlackUser.ID,
 				emp.SlackUser.RealName,
 				timeOffToApply.Type.Text,
 				timeOffToApply.Type.Icon,
-				timeOffToApply.Start,
-				timeOffToApply.End,
+				dateHumanReadable,
 			))
 
 			if emp.SlackUser.Profile.StatusEmoji == timeOffToApply.Type.Icon &&
