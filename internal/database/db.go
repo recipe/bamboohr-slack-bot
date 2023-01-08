@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/recipe/bamboohr-slack-bot/internal/bamboohr"
 	log "github.com/sirupsen/logrus"
 	"github.com/slack-go/slack"
 	"github.com/syndtr/goleveldb/leveldb"
@@ -13,10 +14,11 @@ import (
 )
 
 const (
-	TeamPrefix     = "TEAM"
-	UserPrefix     = "USER"
-	WhoIsOutPrefix = "WIO"
-	CallbackPrefix = "CALLBACK"
+	TeamPrefix        = "TEAM"
+	UserPrefix        = "USER"
+	WhoIsOutPrefix    = "WIO"
+	CallbackPrefix    = "CALLBACK"
+	DepartmentsPrefix = "DEPARTMENTS"
 )
 
 var DB = New()
@@ -36,6 +38,42 @@ type InstallCallback struct {
 	ResponseURL    string `json:"response_url"`
 	BambooHROrg    string `json:"bamboohr_org"`
 	BambooHRSecret string `json:"bamboohr_secret"`
+}
+
+// TimeOffType struct is used as the config definition
+type TimeOffType struct {
+	OrderNumber  int    `json:"orderNumber"`
+	BambooHRType string `json:"bambooHRType"`
+	Text         string `json:"text"`
+	Icon         string `json:"icon"`
+}
+
+type TimeOff struct {
+	Type  *TimeOffType `json:"type"`
+	Start string       `json:"start"`
+	End   string       `json:"end"`
+}
+
+type WhoIsOutMessageSlackUser struct {
+	ID       string `json:"id"`
+	RealName string `json:"realName"`
+}
+
+type WhoIsOutMessageEmployee struct {
+	SlackUser WhoIsOutMessageSlackUser `json:"slack"`
+	Info      *bamboohr.EmployeeInfo   `json:"info,omitempty"`
+}
+
+// WhoIsOutMessage is used to parse the who-is-out message
+type WhoIsOutMessage struct {
+	Employee WhoIsOutMessageEmployee `json:"employee"`
+	TimeOff  TimeOff                 `json:"timeOff"`
+}
+
+// DepartmentCache represents the list of departments in cache
+type DepartmentCache struct {
+	Departments map[int]string `json:"departments"`
+	ExpiresAt   int64          `json:"expiresAt"`
 }
 
 type cfb8 struct {
@@ -173,14 +211,14 @@ func GetOrgs() []OrganizationCredentials {
 		if string(key) >= TeamPrefix+"~" {
 			break
 		}
-		slackTeamId := string(key)[len(TeamPrefix)+1:]
+		slackTeamID := string(key)[len(TeamPrefix)+1:]
 		var credentials OrganizationCredentials
 		if err := json.Unmarshal([]byte(Decrypt(string(iter.Value()))), &credentials); err != nil {
 			log.Fatalf("Could not decode a JSON while retrieving an organization credentials: %v", err)
 		}
 
-		credentials.SlackTeamID = slackTeamId
-		slackToken, ok := GetSlackUserToken(slackTeamId, credentials.SlackAdminUserID)
+		credentials.SlackTeamID = slackTeamID
+		slackToken, ok := GetSlackUserToken(slackTeamID, credentials.SlackAdminUserID)
 		if !ok {
 			continue
 		}
@@ -190,6 +228,30 @@ func GetOrgs() []OrganizationCredentials {
 	iter.Release()
 
 	return list
+}
+
+// GetOrg gets an organization credentials for the specific Slack team
+func GetOrg(slackTeamID string) (OrganizationCredentials, bool) {
+	res := OrganizationCredentials{}
+	data, err := DB.Get([]byte(TeamPrefix+":"+slackTeamID), nil)
+
+	if err != nil {
+		log.Errorf("Could not retrieve an organization from the database: %v", err)
+
+		return res, false
+	}
+
+	if len(data) == 0 {
+		return res, false
+	}
+
+	if err := json.Unmarshal([]byte(Decrypt(string(data))), &res); err != nil {
+		log.Errorf("Could not decode a JSON while retrieving an organization: %v", err)
+
+		return res, false
+	}
+
+	return res, true
 }
 
 // PutOrg saves an organization credentials
@@ -233,20 +295,68 @@ func PutSlackUserToken(slackTeamID string, slackUserID string, token SlackToken)
 
 // GetWIOMessage gets the "who is out" message for the specific Slack workspace,
 // which is cached in the database and gets refreshed by the poller.
-func GetWIOMessage(slackTeamID string) string {
+func GetWIOMessage(slackTeamID string) ([]WhoIsOutMessage, error) {
+	res := make([]WhoIsOutMessage, 0)
 	data, err := DB.Get([]byte(WhoIsOutPrefix+":"+slackTeamID), nil)
 	if err != nil {
-		return ""
+		return res, err
+	}
+	if err := json.Unmarshal([]byte(Decrypt(string(data))), &res); err != nil {
+		log.Errorf("Could not decode a JSON while retrieving a who-is-out message: %v", err)
+
+		return res, err
 	}
 
-	return Decrypt(string(data))
+	return res, nil
 }
 
 // PutWIOMessage refreshes the "who is out" message for the specific Slack workspace.
-func PutWIOMessage(slackTeamID string, message string) (err error) {
-	err = DB.Put([]byte(WhoIsOutPrefix+":"+slackTeamID), []byte(Encrypt(message)), nil)
+func PutWIOMessage(slackTeamID string, message []WhoIsOutMessage) error {
+	jsonStr, err := json.Marshal(message)
+	if err != nil {
+		log.Errorf("Could not encode to a JSON string while saving a who-is-out message: %v", err)
 
-	return
+		return err
+	}
+
+	err = DB.Put([]byte(WhoIsOutPrefix+":"+slackTeamID), []byte(Encrypt(string(jsonStr))), nil)
+
+	return err
+}
+
+// PutOrgDepartments put a list of available departments to the cache
+func PutOrgDepartments(slackTeamID string, data DepartmentCache) error {
+	jsonStr, err := json.Marshal(data)
+	if err != nil {
+		log.Errorf("Could not encode to a JSON string while saving departments: %v", err)
+
+		return err
+	}
+
+	err = DB.Put([]byte(DepartmentsPrefix+":"+slackTeamID), []byte(Encrypt(string(jsonStr))), nil)
+
+	return err
+}
+
+// GetOrgDepartments gets a list of departments from the cache
+func GetOrgDepartments(slackTeamID string) (*DepartmentCache, bool) {
+	res := &DepartmentCache{}
+	data, err := DB.Get([]byte(DepartmentsPrefix+":"+slackTeamID), nil)
+	if err != nil {
+		log.Errorf("Could not read a list of departments from the database: %v", err)
+
+		return nil, false
+	}
+	if len(data) == 0 {
+		return res, false
+	}
+	if err := json.Unmarshal([]byte(Decrypt(string(data))), res); err != nil {
+		log.Errorf("Could not decode a JSON while retrieving departments: %v", err)
+
+		return nil, false
+	}
+
+	return res, true
 }
 
 // PutInstallCallback saves an installation callback meta information to process with the further callback.
