@@ -1,9 +1,6 @@
 name: build
 
-on:
-  push:
-    tags:
-      - '*'
+on: push
 
 jobs:
   build:
@@ -17,6 +14,8 @@ jobs:
       GOOS: ${{ matrix.goos }}
       GOARCH: ${{ matrix.goarch }}
       BOT: bamboohr-slack-bot
+      RELEASE_VERSION: ${GITHUB_REF#refs/*/}
+      BOT_VERSION: ${BOT}_${GITHUB_REF#refs/*/}
 
     steps:
     - name: Checkout
@@ -26,18 +25,15 @@ jobs:
 
     - name: Set output
       id: vars
-      run: |
-        echo "release_version=${GITHUB_REF#refs/*/}" >> $GITHUB_OUTPUT
-        echo "asset_name=${BOT}_${GITHUB_REF#refs/*/}_${GOOS}_${GOARCH}" >> $GITHUB_OUTPUT
+      run: echo "asset_name=${BOT}_${GITHUB_REF#refs/*/}_${GOOS}_${GOARCH}" >> $GITHUB_OUTPUT
 
     - name: Check output
       env:
-        RELEASE_VERSION: ${{ steps.vars.outputs.release_version }}
-        BOT_VERSION: ${BOT}_${{ steps.vars.outputs.release_version }}
         ASSET_NAME: ${{ steps.vars.outputs.asset_name }}
       run: |
-        echo $RELEASE_VERSION
-        echo $ASSET_NAME
+        echo ${RELEASE_VERSION}
+        echo ${BOT_VERSION}
+        echo ${ASSET_NAME}
 
     - name: Set up Go
       uses: actions/setup-go@v3
@@ -57,8 +53,6 @@ jobs:
 
     - name: Build a debian package for linux
       if: matrix.goos == 'linux'
-      env:
-        RELEASE_VERSION: ${{ steps.vars.outputs.release_version }}
       run: |
         export PKG="release/debian/${BOT}"
         mkdir -p "${PKG}/opt/${BOT}/bin"
@@ -82,6 +76,7 @@ jobs:
       run: tar -cvzf ${{ steps.vars.outputs.asset_name }}.tar.gz ${BOT_VERSION}
 
     - name: Upload binaries to release
+      if: startsWith(github.ref, 'refs/tags/')
       uses: svenstaro/upload-release-action@v2
       with:
         repo_token: ${{ secrets.GITHUB_TOKEN }}
