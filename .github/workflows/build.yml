@@ -25,12 +25,13 @@ jobs:
       id: vars
       run: |
         if [ -z "${GITHUB_REF#refs/*/}" ]; then
-          echo "release_version=$(git describe --tags `git rev-list --tags --max-count=1`)" >> $GITHUB_OUTPUT
+          export RELEASE_VERSION="$(git describe --tags `git rev-list --tags --max-count=1`)"
         else
-          echo "release_version=${GITHUB_REF#refs/*/}" >> $GITHUB_OUTPUT
+          export RELEASE_VERSION="${GITHUB_REF#refs/*/}"
         fi
-        echo "bot_version=${BOT}_${GITHUB_REF#refs/*/}" >> $GITHUB_OUTPUT
-        echo "asset_name=${BOT}_${GITHUB_REF#refs/*/}_${GOOS}_${GOARCH}" >> $GITHUB_OUTPUT
+        echo "release_version=${RELEASE_VERSION}" >> $GITHUB_OUTPUT
+        echo "bot_version=${BOT}_${RELEASE_VERSION}" >> $GITHUB_OUTPUT
+        echo "asset_name=${BOT}_${RELEASE_VERSION}_${GOOS}_${GOARCH}" >> $GITHUB_OUTPUT
 
     - name: Check output
       env:
