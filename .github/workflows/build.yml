@@ -33,6 +33,7 @@ jobs:
     - name: Check output
       env:
         RELEASE_VERSION: ${{ steps.vars.outputs.release_version }}
+        BOT_VERSION: ${BOT}_${{ steps.vars.outputs.release_version }}
         ASSET_NAME: ${{ steps.vars.outputs.asset_name }}
       run: |
         echo $RELEASE_VERSION
@@ -73,19 +74,18 @@ jobs:
         mv -v "${PKG}_${RELEASE_VERSION}-1.deb" release
 
     - name: Clean up
-      run: rm -frv release/debian
+      run: |
+        rm -frv release/debian
+        mv release ${BOT_VERSION}
 
     - name: Create a ZIP archive
-      run: |
-        pushd release || exit 1
-        zip -9vr ../${{ steps.vars.outputs.asset_name }}.zip .
-        popd || exit 1
+      run: tar -cvzf ${{ steps.vars.outputs.asset_name }}.tar.gz ${BOT_VERSION}
 
     - name: Upload binaries to release
       uses: svenstaro/upload-release-action@v2
       with:
         repo_token: ${{ secrets.GITHUB_TOKEN }}
-        file: ${{ steps.vars.outputs.asset_name }}.zip
+        file: ${{ steps.vars.outputs.asset_name }}.tar.gz
         tag: ${{ github.ref }}
         overwrite: true
 
