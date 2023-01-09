@@ -8,26 +8,11 @@ import (
 	"github.com/recipe/bamboohr-slack-bot/internal/database"
 	log "github.com/sirupsen/logrus"
 	"github.com/slack-go/slack"
-	"strings"
 	"time"
 )
 
-// TimeOffType struct is used as the config definition
-type TimeOffType struct {
-	OrderNumber  int
-	BambooHRType string
-	Text         string
-	Icon         string
-}
-
-type TimeOff struct {
-	Type  *TimeOffType
-	Start string
-	End   string
-}
-
 // TimeOffTypeList is the list of the known time-off types that are defined in the config.yml
-type TimeOffTypeList map[string]TimeOffType
+type TimeOffTypeList map[string]database.TimeOffType
 
 // FormatDate formats the date in the "YYYY-MM-DD" form to a specified layout format
 func FormatDate(date string, layout string) (string, error) {
@@ -56,14 +41,12 @@ func loadTypes() (TimeOffTypeList, error) {
 	if !ok {
 		return nil, errors.New("the 'types' data set is not defined in the config")
 	}
-
-	var timeOffTypeList TimeOffTypeList
-	timeOffTypeList = make(TimeOffTypeList)
+	timeOffTypeList := make(TimeOffTypeList)
 	for n, value := range configTimeOffTypes.([]interface{}) {
 		if len(value.([]interface{})) < 3 {
 			return nil, fmt.Errorf("invalid time off type configuration at position %d", n)
 		}
-		timeOffType := TimeOffType{
+		timeOffType := database.TimeOffType{
 			OrderNumber:  n,
 			BambooHRType: fmt.Sprintf("%s", value.([]interface{})[0]),
 			Text:         fmt.Sprintf("%s", value.([]interface{})[1]),
@@ -93,13 +76,23 @@ func Run() error {
 	for _, org := range database.GetOrgs() {
 		log.Infof("Who is out today in %s?", org.BambooHROrg)
 		bAPI := bamboohr.New(org.BambooHROrg, org.BambooHRSecret)
-		// Get all employees from the BambooHR
+
+		// Get all employees from the BambooHR. The only endpoint to get email addresses
 		empList, err := bAPI.GetEmployeeList()
 		if err != nil {
 			log.Errorf("Unable to get a list of employees: %v", err)
 
 			continue
 		}
+
+		// Get all employees with links to departments, divisions and job titles
+		empDirectory, err := bAPI.GetEmployeeDirectory()
+		if err != nil {
+			log.Errorf("Unable to get an employee directory: %v", err)
+
+			continue
+		}
+
 		sAPI := slack.New(org.SlackToken.AccessToken)
 		// Get all users for the associated Slack workspace
 		list, err := sAPI.GetUsers()
@@ -112,6 +105,9 @@ func Run() error {
 		for _, user := range list {
 			if val, ok := empList[user.Profile.Email]; ok {
 				val.SlackUser = user
+				if dirVal, ok := empDirectory[val.EmployeeID]; ok {
+					val.Info = &dirVal
+				}
 				empList[user.Profile.Email] = val
 			}
 		}
@@ -130,17 +126,17 @@ func Run() error {
 		}
 		// Transforming the list to the following structure:
 		// [ EmployeeID => [ Date => TimeOffType ] ]
-		var toList map[int]map[string]TimeOff
-		toList = make(map[int]map[string]TimeOff)
+		var toList map[int]map[string]database.TimeOff
+		toList = make(map[int]map[string]database.TimeOff)
 		for _, timeOff := range timeOffList {
 			for date := range timeOff.Dates {
 				if startDate <= date && date <= endDate {
 					if _, ok := toList[timeOff.EmployeeID]; !ok {
-						toList[timeOff.EmployeeID] = make(map[string]TimeOff)
+						toList[timeOff.EmployeeID] = make(map[string]database.TimeOff)
 					}
 					t, ok := timeOffTypeList[timeOff.Type.Name]
 					if !ok {
-						t = TimeOffType{
+						t = database.TimeOffType{
 							OrderNumber:  255, // Undefined time-off type has the lowest priority
 							BambooHRType: timeOff.Type.Name,
 							Text:         timeOff.Type.Name,
@@ -151,7 +147,7 @@ func Run() error {
 						toList[timeOff.EmployeeID][date].Type.OrderNumber > t.OrderNumber {
 						// If there are two different time-offs for the same day,
 						// it will select one listed first in the config.yml
-						to := TimeOff{
+						to := database.TimeOff{
 							Type:  &t,
 							Start: timeOff.Start,
 							End:   timeOff.End,
@@ -162,7 +158,7 @@ func Run() error {
 			}
 		}
 
-		whoIsOutMessage := make([]string, 0)
+		whoIsOutMessage := make([]database.WhoIsOutMessage, 0)
 
 		for _, emp := range empList {
 			// An employee hasn't been added to Slack yet.
@@ -187,16 +183,17 @@ func Run() error {
 				return fmt.Errorf("unable to convert the date (%s) to the unix timestamp: %s", userDate, err)
 			}
 			expectedStatusExpiration = expectedStatusExpiration - int64(emp.SlackUser.TZOffset)
-			dateHumanReadable, _ := FormatDate(timeOffToApply.End, "Monday, 02 Jan")
 
-			// Produce a who is out message for the /whoisout Slack command for caching purposes.
-			whoIsOutMessage = append(whoIsOutMessage, fmt.Sprintf("<@%s> (%s) %s %s to %s",
-				emp.SlackUser.ID,
-				emp.SlackUser.RealName,
-				timeOffToApply.Type.Text,
-				timeOffToApply.Type.Icon,
-				dateHumanReadable,
-			))
+			whoIsOutMessage = append(whoIsOutMessage, database.WhoIsOutMessage{
+				Employee: database.WhoIsOutMessageEmployee{
+					SlackUser: database.WhoIsOutMessageSlackUser{
+						ID:       emp.SlackUser.ID,
+						RealName: emp.SlackUser.RealName,
+					},
+					Info: emp.Info,
+				},
+				TimeOff: timeOffToApply,
+			})
 
 			if emp.SlackUser.Profile.StatusEmoji == timeOffToApply.Type.Icon &&
 				int64(emp.SlackUser.Profile.StatusExpiration) == expectedStatusExpiration {
@@ -247,12 +244,7 @@ func Run() error {
 			}
 		}
 
-		if len(whoIsOutMessage) == 0 {
-			whoIsOutMessage = append(whoIsOutMessage, "Everybody is on board.")
-			log.Info("No time-offs found.")
-		}
-
-		if err := database.PutWIOMessage(org.SlackTeamID, strings.Join(whoIsOutMessage, "\n")); err != nil {
+		if err := database.PutWIOMessage(org.SlackTeamID, whoIsOutMessage); err != nil {
 			log.Errorf("Unable to store who-is-out information to the database. %v", err)
 		}
 	}

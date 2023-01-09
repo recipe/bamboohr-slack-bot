@@ -105,6 +105,9 @@ func CommandHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var departmentList map[int]string
+	department := ""
+
 	// At this point the request is considered to be valid.
 	if text != "" {
 		tokens := strings.Fields(text)
@@ -135,6 +138,28 @@ func CommandHandler(w http.ResponseWriter, r *http.Request) {
 			ProcessInstallCommand(cb, triggerID, teamID, userID, true)
 
 			return
+		} else if tokens[0] == "in" && len(tokens) > 1 {
+			department = strings.Join(tokens[1:], " ")
+
+			departmentList, ok = GetDepartmentsList(teamID)
+			if ok {
+				// validating the input
+				valid := false
+				actualList := make([]string, 0)
+				for _, d := range departmentList {
+					actualList = append(actualList, d)
+					if strings.EqualFold(d, department) {
+						valid = true
+					}
+				}
+				if !valid {
+					w.Header().Set("Content-Type", "text/plain")
+					_, _ = fmt.Fprintln(w, "Hey, here is the list of available departments: `"+
+						strings.Join(actualList, "`, `")+"`.")
+
+					return
+				}
+			}
 		} else {
 			w.Header().Set("Content-Type", "text/plain")
 			_, _ = fmt.Fprintln(w, CommandUsage)
@@ -144,14 +169,39 @@ func CommandHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Debugf("Responding to the POST %s command.", r.URL.Path)
-	message := database.GetWIOMessage(teamID)
-	if message == "" {
-		message = "Nothing found."
+	message := make([]string, 0)
+	wioMessage, err := database.GetWIOMessage(teamID)
+	if err != nil {
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+
+		return
+	}
+	if len(wioMessage) > 0 {
+		for _, m := range wioMessage {
+			if department != "" {
+				if m.Employee.Info == nil || !strings.EqualFold(m.Employee.Info.Department, department) {
+					continue
+				}
+			}
+			dateHumanReadable, _ := FormatDate(m.TimeOff.End, "Monday, 02 Jan")
+			message = append(message, fmt.Sprintf(
+				"<@%s> (%s) %s %s to %s",
+				m.Employee.SlackUser.ID,
+				m.Employee.SlackUser.RealName,
+				m.TimeOff.Type.Text,
+				m.TimeOff.Type.Icon,
+				dateHumanReadable,
+			))
+		}
+	}
+
+	if len(message) == 0 {
+		message = append(message, "Nothing found.")
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 
-	jsonMessage, err := json.Marshal(map[string]string{"text": message})
+	jsonMessage, err := json.Marshal(map[string]string{"text": strings.Join(message, "\n")})
 	if err != nil {
 		log.Errorf("Could not encode to a JSON string: %v", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
@@ -159,6 +209,36 @@ func CommandHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, _ = fmt.Fprintln(w, string(jsonMessage))
+}
+
+// GetDepartmentsList gets a cached list of departments for a specific Slack team
+func GetDepartmentsList(slackTeamID string) (map[int]string, bool) {
+	result := make(map[int]string)
+	deps, ok := database.GetOrgDepartments(slackTeamID)
+	if !ok || deps.ExpiresAt < time.Now().Unix() {
+		// The list does not exist, or it is expired.
+		// Requesting the list of departments.
+		org, ok := database.GetOrg(slackTeamID)
+		if !ok {
+			return result, false
+		}
+		bAPI := bamboohr.New(org.BambooHROrg, org.BambooHRSecret)
+		depsList, err := bAPI.GetDepartments()
+		if err != nil {
+			log.Errorf("Unable to get a list of departments: %v", err)
+
+			return result, false
+		}
+		// Hits the cache
+		_ = database.PutOrgDepartments(slackTeamID, database.DepartmentCache{
+			Departments: depsList,
+			ExpiresAt:   time.Now().Unix() + 3600, // 1 hour
+		})
+
+		return depsList, true
+	}
+
+	return deps.Departments, true
 }
 
 // RedirectHandler OAuth redirect handler is used when a user allows application permissions.

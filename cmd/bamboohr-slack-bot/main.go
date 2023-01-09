@@ -18,6 +18,7 @@ const PollingIntervalMin = 10
 const CommandName = "whoisout"
 const CommandUsage = "These are available " + CommandName + " commands:\n" +
 	"`/" + CommandName + "` Get an information about teammates who are out today.\n" +
+	"`/" + CommandName + "` in <department> Get the same information for people in the department.\n" +
 	"`/" + CommandName + " install <org name> <api secret>` Install the BambooHR API token for your team. " +
 	"`<org name>` is the name of your organization as it is used in the BambooHR API."
 const SlackScope = "users.profile:write,users.profile:read,users:read.email,users:read,commands"
