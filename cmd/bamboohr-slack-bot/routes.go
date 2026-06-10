@@ -7,11 +7,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"github.com/gookit/config"
-	"github.com/recipe/bamboohr-slack-bot/internal/bamboohr"
-	"github.com/recipe/bamboohr-slack-bot/internal/database"
-	log "github.com/sirupsen/logrus"
-	"github.com/slack-go/slack"
 	"io"
 	"math"
 	"net/http"
@@ -20,6 +15,12 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/gookit/config"
+	"github.com/recipe/bamboohr-slack-bot/internal/bamboohr"
+	"github.com/recipe/bamboohr-slack-bot/internal/database"
+	log "github.com/sirupsen/logrus"
+	"github.com/slack-go/slack"
 )
 
 // CommandHandler handles the /whoisout Slack command requests
@@ -74,7 +75,13 @@ func CommandHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Debugf("Handling the POST %s request. Payload: %s", r.URL.Path, payload)
+	params, err := url.ParseQuery(string(payload))
+	if err == nil {
+		params.Set("token", "****")
+		log.Debugf("Handling the POST %s request. Payload: %s", r.URL.Path, params.Encode())
+	} else {
+		log.Debugf("Handling the POST %s request.", r.URL.Path)
+	}
 
 	h := hmac.New(sha256.New, []byte(slackSigningSecret))
 	h.Write([]byte("v0:" + ts + ":"))
