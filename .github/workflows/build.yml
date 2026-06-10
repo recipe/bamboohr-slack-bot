@@ -83,6 +83,13 @@ jobs:
     - name: Create a ZIP archive
       run: tar -cvzf ${{ steps.vars.outputs.asset_name }}.tar.gz ${{ steps.vars.outputs.bot_version }}
 
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ steps.vars.outputs.asset_name }}
+        path: ${{ steps.vars.outputs.asset_name }}.tar.gz
+        retention-days: 30
+
     - name: Upload binaries to release
       if: startsWith(github.ref, 'refs/tags/')
       uses: svenstaro/upload-release-action@v2
