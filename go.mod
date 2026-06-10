@@ -4,7 +4,7 @@ go 1.25
 
 require (
 	github.com/gookit/config v1.1.0
-	github.com/sirupsen/logrus v1.9.0
+	github.com/sirupsen/logrus v1.9.1
 	github.com/slack-go/slack v0.23.1
 	github.com/syndtr/goleveldb v1.0.0
 	golang.org/x/sys v0.31.0
