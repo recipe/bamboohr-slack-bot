@@ -67,6 +67,26 @@ func RedactCommandPayload(params url.Values) url.Values {
 	return res
 }
 
+// VerifySlackSignature checks the X-Slack-Signature header of a request signed by Slack:
+// "v0=" followed by the hex HMAC-SHA256 of "v0:<timestamp>:<body>" with the signing secret.
+// The MACs are compared in constant time, so the response time doesn't reveal how much of a forged
+// signature is correct.
+func VerifySlackSignature(signingSecret string, timestamp string, body []byte, signature string) bool {
+	got, ok := strings.CutPrefix(signature, "v0=")
+	if !ok {
+		return false
+	}
+	gotMAC, err := hex.DecodeString(got)
+	if err != nil {
+		return false
+	}
+	h := hmac.New(sha256.New, []byte(signingSecret))
+	h.Write([]byte("v0:" + timestamp + ":"))
+	h.Write(body)
+
+	return hmac.Equal(gotMAC, h.Sum(nil))
+}
+
 // CommandHandler handles the /whoisout Slack command requests
 func CommandHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -126,11 +146,7 @@ func CommandHandler(w http.ResponseWriter, r *http.Request) {
 		log.Debugf("Handling the POST %s request.", r.URL.Path)
 	}
 
-	h := hmac.New(sha256.New, []byte(slackSigningSecret))
-	h.Write([]byte("v0:" + ts + ":"))
-	h.Write(payload)
-	sha := hex.EncodeToString(h.Sum(nil))
-	if "v0="+sha != sig {
+	if !VerifySlackSignature(slackSigningSecret, ts, payload, sig) {
 		log.Debugf("Signature does not match. Check the slack_signing_secret in the config.yml.")
 		http.Error(w, "Signature does not match (%s).", http.StatusForbidden)
 

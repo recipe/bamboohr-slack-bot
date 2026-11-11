@@ -181,11 +181,9 @@ func TestInstallCommandStoresTheRequester(t *testing.T) {
 		"text":         {"install acme 0123456789abcdef0123456789abcdef01234567"},
 	}.Encode()
 	ts := strconv.FormatInt(time.Now().Unix(), 10)
-	h := hmac.New(sha256.New, []byte("signing-secret"))
-	h.Write([]byte("v0:" + ts + ":" + body))
 	r := httptest.NewRequest(http.MethodPost, "/command", strings.NewReader(body))
 	r.Header.Set("X-Slack-Request-Timestamp", ts)
-	r.Header.Set("X-Slack-Signature", "v0="+hex.EncodeToString(h.Sum(nil)))
+	r.Header.Set("X-Slack-Signature", slackSignature("signing-secret", ts, body))
 	w := httptest.NewRecorder()
 
 	CommandHandler(w, r)
@@ -289,5 +287,71 @@ func putExpiredCallback(t *testing.T, state string, cb database.InstallCallback)
 	}
 	if err := database.DB.Put([]byte(database.CallbackPrefix+":"+state), []byte(database.Encrypt(string(b))), nil); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// slackSignature signs the request body as Slack does.
+func slackSignature(secret, ts, body string) string {
+	h := hmac.New(sha256.New, []byte(secret))
+	h.Write([]byte("v0:" + ts + ":" + body))
+	return "v0=" + hex.EncodeToString(h.Sum(nil))
+}
+
+func TestVerifySlackSignature(t *testing.T) {
+	const secret, ts, body = "signing-secret", "1794425398", "team_id=T1&text=help"
+	valid := slackSignature(secret, ts, body)
+	hexMAC := strings.TrimPrefix(valid, "v0=")
+	// The last hex digit replaced with another hex digit, so only the MAC comparison can reject it.
+	lastDigit := "0"
+	if strings.HasSuffix(valid, "0") {
+		lastDigit = "1"
+	}
+	oneDigitDiffers := valid[:len(valid)-1] + lastDigit
+	for _, c := range []struct {
+		name, secret, ts, body, sig string
+		want                        bool
+	}{
+		{"valid", secret, ts, body, valid, true},
+		{"upper case hex", secret, ts, body, "v0=" + strings.ToUpper(hexMAC), true},
+		{"another secret", "another-secret", ts, body, valid, false},
+		{"tampered body", secret, ts, body + "&x=1", valid, false},
+		{"another timestamp", secret, "1794425399", body, valid, false},
+		{"one digit differs", secret, ts, body, oneDigitDiffers, false},
+		{"truncated", secret, ts, body, valid[:len(valid)-2], false},
+		{"missing prefix", secret, ts, body, hexMAC, false},
+		{"unknown version", secret, ts, body, "v1=" + hexMAC, false},
+		{"not hex", secret, ts, body, "v0=" + strings.Repeat("zz", 32), false},
+		{"empty MAC", secret, ts, body, "v0=", false},
+		{"empty", secret, ts, body, "", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := VerifySlackSignature(c.secret, c.ts, []byte(c.body), c.sig); got != c.want {
+				t.Errorf("got %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+func TestCommandHandlerRejectsInvalidSignature(t *testing.T) {
+	loadTestConfig(t, "slack_signing_secret: \"signing-secret\"\n")
+	calls := stubProcessInstall(t)
+	body := url.Values{
+		"team_id": {"T1"}, "user_id": {"U1"}, "response_url": {"https://hooks.slack.com/x"},
+		"text": {"install acme 0123456789abcdef0123456789abcdef01234567"},
+	}.Encode()
+	ts := strconv.FormatInt(time.Now().Unix(), 10)
+
+	r := httptest.NewRequest(http.MethodPost, "/command", strings.NewReader(body))
+	r.Header.Set("X-Slack-Request-Timestamp", ts)
+	r.Header.Set("X-Slack-Signature", slackSignature("another-secret", ts, body))
+	w := httptest.NewRecorder()
+
+	CommandHandler(w, r)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("got HTTP %d, want 403", w.Code)
+	}
+	if len(*calls) != 0 {
+		t.Errorf("the command must not be processed: %+v", *calls)
 	}
 }
