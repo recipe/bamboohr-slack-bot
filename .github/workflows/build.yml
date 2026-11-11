@@ -3,7 +3,29 @@ name: build
 on: push
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: go.mod
+
+    - name: Check formatting
+      run: make fmt
+
+    - name: Vet
+      run: make vet
+
+    - name: Test
+      run: go test -race -count=1 -v ./...
+
   build:
+    needs: test
     strategy:
       matrix:
         goos: [linux, darwin]

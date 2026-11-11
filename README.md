@@ -8,7 +8,11 @@ Features
 --
 
 * Automatically syncs Slack user profile statuses for all members
-  of your team based on the BambooHR time-off table.
+  of your team based on the BambooHR time-off table. A status lasts until the end of
+  the last day of the time off. Consecutive time-offs and BambooHR company holidays
+  right after the time off are treated as one period.
+  It is re-checked on every poll, so it follows changes of the time off and of the
+  user's time zone, and it is cleared when the time off is withdrawn.
 * Shows who is out today via the `/whoisout` slash command.
 
 Installation

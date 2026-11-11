@@ -10,7 +10,10 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/slack-go/slack"
 	"github.com/syndtr/goleveldb/leveldb"
+	"github.com/syndtr/goleveldb/leveldb/storage"
+	"github.com/syndtr/goleveldb/leveldb/util"
 	"golang.org/x/sys/unix"
+	"testing"
 )
 
 const (
@@ -19,6 +22,7 @@ const (
 	WhoIsOutPrefix    = "WIO"
 	CallbackPrefix    = "CALLBACK"
 	DepartmentsPrefix = "DEPARTMENTS"
+	StatusPrefix      = "STATUS"
 )
 
 var DB = New()
@@ -76,6 +80,14 @@ type DepartmentCache struct {
 	ExpiresAt   int64          `json:"expiresAt"`
 }
 
+// AppliedStatus is a Slack profile status that has been set by the bot.
+// It is used to detect statuses that must be cleared when a time off is withdrawn.
+type AppliedStatus struct {
+	Text       string `json:"text"`
+	Emoji      string `json:"emoji"`
+	Expiration int64  `json:"expiration"`
+}
+
 type cfb8 struct {
 	b         cipher.Block
 	blockSize int
@@ -126,6 +138,15 @@ func newCFB8(block cipher.Block, iv []byte, decrypt bool) cipher.Stream {
 }
 
 func New() (db *leveldb.DB) {
+	if testing.Testing() {
+		// Tests must never touch the real database.
+		db, err := leveldb.Open(storage.NewMemStorage(), nil)
+		if err != nil {
+			log.Fatalf("Unable to open the in-memory database: %v", err)
+		}
+
+		return db
+	}
 	var path string
 	for _, p := range [2]string{"/opt/bamboohr-slack-bot/db", "."} {
 		if unix.Access(p, unix.W_OK) == nil {
@@ -393,4 +414,39 @@ func DeleteInstallCallback(triggerID string) (err error) {
 	err = DB.Delete([]byte(CallbackPrefix+":"+triggerID), nil)
 
 	return
+}
+
+// GetAppliedStatuses returns statuses set by the bot in the specific Slack workspace, keyed by the Slack user ID.
+func GetAppliedStatuses(slackTeamID string) map[string]AppliedStatus {
+	res := make(map[string]AppliedStatus)
+	prefix := StatusPrefix + ":" + slackTeamID + ":"
+	iter := DB.NewIterator(util.BytesPrefix([]byte(prefix)), nil)
+	defer iter.Release()
+	for iter.Next() {
+		userID := string(iter.Key())[len(prefix):]
+		var s AppliedStatus
+		if err := json.Unmarshal([]byte(Decrypt(string(iter.Value()))), &s); err != nil {
+			log.Errorf("Could not decode a JSON while retrieving an applied status: %v", err)
+
+			continue
+		}
+		res[userID] = s
+	}
+
+	return res
+}
+
+// PutAppliedStatus saves the status that has been set by the bot for the specific user.
+func PutAppliedStatus(slackTeamID string, slackUserID string, s AppliedStatus) error {
+	b, err := json.Marshal(s)
+	if err != nil {
+		return err
+	}
+
+	return DB.Put([]byte(StatusPrefix+":"+slackTeamID+":"+slackUserID), []byte(Encrypt(string(b))), nil)
+}
+
+// DeleteAppliedStatus forgets the status that has been set by the bot for the specific user.
+func DeleteAppliedStatus(slackTeamID string, slackUserID string) error {
+	return DB.Delete([]byte(StatusPrefix+":"+slackTeamID+":"+slackUserID), nil)
 }
