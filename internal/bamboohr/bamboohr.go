@@ -180,7 +180,7 @@ type RequestContext struct {
 
 func New(org string, token string) *Client {
 	s := &Client{
-		org:        token,
+		org:        org,
 		token:      token,
 		endpoint:   fmt.Sprintf(APIURL, org),
 		httpclient: &http.Client{Timeout: 10 * time.Second},

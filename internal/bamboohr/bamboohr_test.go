@@ -37,6 +37,10 @@ func TestNew(t *testing.T) {
 	if c.endpoint != "https://api.bamboohr.com/api/gateway.php/acme" {
 		t.Errorf("unexpected endpoint %s", c.endpoint)
 	}
+	// The API secret must not end up in other fields, e.g. ones that may be logged.
+	if c.org != "acme" || c.token != "secret" {
+		t.Errorf("got org %q, token %q", c.org, c.token)
+	}
 }
 
 func TestGetEmployeeList(t *testing.T) {

@@ -351,6 +351,9 @@ func TestCommandHandlerRejectsInvalidSignature(t *testing.T) {
 	if w.Code != http.StatusForbidden {
 		t.Errorf("got HTTP %d, want 403", w.Code)
 	}
+	if got := strings.TrimSpace(w.Body.String()); got != "Signature does not match." {
+		t.Errorf("unexpected response %q", got)
+	}
 	if len(*calls) != 0 {
 		t.Errorf("the command must not be processed: %+v", *calls)
 	}
@@ -391,6 +394,10 @@ func TestCommandHandlerRequestAge(t *testing.T) {
 			}
 			if !c.processed && w.Code != http.StatusForbidden {
 				t.Errorf("got HTTP %d, want 403", w.Code)
+			}
+			// The offset of the server clock must not be revealed.
+			if body := w.Body.String(); !c.processed && (strings.ContainsAny(body, "0123456789") || strings.Contains(body, "skew")) {
+				t.Errorf("unexpected response %q", body)
 			}
 		})
 	}

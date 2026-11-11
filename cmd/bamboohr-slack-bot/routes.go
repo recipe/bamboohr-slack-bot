@@ -134,7 +134,9 @@ func CommandHandler(w http.ResponseWriter, r *http.Request) {
 	tts := time.Unix(its, 0)
 	clockSkew := math.Abs(float64(time.Now().Unix() - tts.Unix()))
 	if clockSkew > MaxRequestAge.Seconds() {
-		http.Error(w, fmt.Sprintf("Clock skew: %d sec.", int(clockSkew)), http.StatusForbidden)
+		// The offset of the server clock is only logged, it's not revealed to the caller.
+		log.Debugf("The request timestamp differs from the server time by %d sec.", int(clockSkew))
+		http.Error(w, "The request timestamp is out of range.", http.StatusForbidden)
 
 		return
 	}
@@ -163,7 +165,7 @@ func CommandHandler(w http.ResponseWriter, r *http.Request) {
 
 	if !VerifySlackSignature(slackSigningSecret, ts, payload, sig) {
 		log.Debugf("Signature does not match. Check the slack_signing_secret in the config.yml.")
-		http.Error(w, "Signature does not match (%s).", http.StatusForbidden)
+		http.Error(w, "Signature does not match.", http.StatusForbidden)
 
 		return
 	}
