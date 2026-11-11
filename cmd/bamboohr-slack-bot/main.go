@@ -27,6 +27,11 @@ const SlackScope = "users.profile:write,users.profile:read,users:read.email,user
 //go:embed templates/*
 var Templates embed.FS
 
+// Static are the stylesheet and the font of the landing page.
+//
+//go:embed static/*
+var Static embed.FS
+
 func init() {
 	log.SetFormatter(&log.TextFormatter{})
 	log.SetOutput(os.Stdout)
@@ -102,22 +107,7 @@ func main() {
 	_ = Conf("slack_client_secret")
 	_ = Conf("slack_signing_secret")
 
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/" {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "text/html")
-		tpl := template.Must(template.ParseFS(Templates, "templates/index.html"))
-		_ = tpl.Execute(w, map[string]string{
-			"SlackClientID": url.QueryEscape(slackClientID),
-			"SlackScope":    SlackScope,
-		})
-	})
-
-	http.HandleFunc("/redirect", RedirectHandler)
-
-	http.HandleFunc("/command", CommandHandler)
+	handler := Routes(slackClientID)
 
 	if SSLCrt != "" && SSLKey != "" {
 		log.Infof("Starting HTTPS server (%s).", endpoint)
@@ -125,10 +115,10 @@ func main() {
 		if err != nil {
 			log.Fatalf("Cannot load x509 key pair: %v", err)
 		}
-		log.Fatal(NewServer(endpoint, &cert).ListenAndServeTLS("", ""))
+		log.Fatal(NewServer(endpoint, &cert, handler).ListenAndServeTLS("", ""))
 	} else {
 		WarnPlainHTTP(endpoint)
-		log.Fatal(NewServer(endpoint, nil).ListenAndServe())
+		log.Fatal(NewServer(endpoint, nil, handler).ListenAndServe())
 	}
 }
 
@@ -141,11 +131,33 @@ const (
 	ServerIdleTimeout       = 2 * time.Minute
 )
 
+// Routes returns the handler of all endpoints with the security headers.
+func Routes(slackClientID string) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		tpl := template.Must(template.ParseFS(Templates, "templates/index.html"))
+		_ = tpl.Execute(w, map[string]string{
+			"SlackClientID": url.QueryEscape(slackClientID),
+			"SlackScope":    SlackScope,
+		})
+	})
+	mux.Handle("/static/", http.FileServerFS(Static))
+	mux.HandleFunc("/redirect", RedirectHandler)
+	mux.HandleFunc("/command", CommandHandler)
+
+	return SecurityHeaders(mux)
+}
+
 // NewServer creates the HTTP server. It serves HTTPS with TLS 1.2 or newer when the certificate is provided.
-func NewServer(endpoint string, cert *tls.Certificate) *http.Server {
+func NewServer(endpoint string, cert *tls.Certificate, handler http.Handler) *http.Server {
 	s := &http.Server{
 		Addr:              endpoint,
-		Handler:           nil,
+		Handler:           handler,
 		ReadHeaderTimeout: ServerReadHeaderTimeout,
 		ReadTimeout:       ServerReadTimeout,
 		WriteTimeout:      ServerWriteTimeout,
@@ -173,6 +185,24 @@ func IsLoopbackEndpoint(endpoint string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// ContentSecurityPolicy allows only the landing page's own stylesheet, font and inline styles.
+// There are no scripts, forms or frames.
+const ContentSecurityPolicy = "default-src 'none'; style-src 'self' 'unsafe-inline'; font-src 'self'; " +
+	"img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+
+// SecurityHeaders adds security headers to all responses.
+func SecurityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("Content-Security-Policy", ContentSecurityPolicy)
+		h.Set("X-Content-Type-Options", "nosniff")
+		// The OAuth redirect URL contains the code, it must not leak to other sites.
+		h.Set("Referrer-Policy", "no-referrer")
+		h.Set("X-Frame-Options", "DENY")
+		next.ServeHTTP(w, r)
+	})
 }
 
 // WarnPlainHTTP warns that the server is started without TLS on an address that other hosts can reach.

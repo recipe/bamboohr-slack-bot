@@ -79,3 +79,13 @@ The `/whoisout install <bamboohr_subdomain> <bamboohr_secret>` command binds you
 BambooHR account to a Slack workspace. Profile statuses for users present in both
 Slack and BambooHR will be updated automatically based on the BambooHR time-off table.
 Users are matched by their email address.
+
+Third-party files
+--
+
+The landing page serves these files from the binary:
+
+* [normalize.css](https://github.com/necolas/normalize.css) v8.0.1, MIT License
+  (the notice is in the file header).
+* The [Satisfy](https://fonts.google.com/specimen/Satisfy) font by Sideshow, Apache License 2.0
+  (see [third_party/satisfy/LICENSE.txt](third_party/satisfy/LICENSE.txt)).

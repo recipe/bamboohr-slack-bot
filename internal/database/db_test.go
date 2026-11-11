@@ -24,7 +24,7 @@ func TestEncryptDecrypt(t *testing.T) {
 		if s != "" && enc == s {
 			t.Errorf("%q is not encrypted", s)
 		}
-		if got := Decrypt(enc); got != s {
+		if got := mustDecrypt(t, enc); got != s {
 			t.Errorf("got %q, want %q", got, s)
 		}
 	}
@@ -258,25 +258,25 @@ func v0Encrypt(t *testing.T, data string) string {
 	return base64.StdEncoding.EncodeToString(ciphertext)
 }
 
-func expectPanic(t *testing.T, name string, f func()) {
+// mustDecrypt decrypts the data and fails the test on an error.
+func mustDecrypt(t *testing.T, data string) string {
 	t.Helper()
-	defer func() {
-		if recover() == nil {
-			t.Errorf("%s: expected a panic", name)
-		}
-	}()
-	f()
+	res, err := Decrypt(data)
+	if err != nil {
+		t.Fatalf("unable to decrypt %q: %v", data, err)
+	}
+	return res
 }
 
 func TestV0Encryption(t *testing.T) {
 	if got := v0Encrypt(t, v0FixturePlaintext); got != v0Fixture {
 		t.Fatalf("the v0 encryption helper doesn't match the fixture: %s", got)
 	}
-	if got := Decrypt(v0Fixture); got != v0FixturePlaintext {
+	if got := mustDecrypt(t, v0Fixture); got != v0FixturePlaintext {
 		t.Errorf("got %q, want %q", got, v0FixturePlaintext)
 	}
 	for _, s := range []string{"a", strings.Repeat("ü", 1000)} {
-		if got := Decrypt(v0Encrypt(t, s)); got != s {
+		if got := mustDecrypt(t, v0Encrypt(t, s)); got != s {
 			t.Errorf("got %q, want %q", got, s)
 		}
 	}
@@ -286,7 +286,7 @@ func TestV0Encryption(t *testing.T) {
 const v1Fixture = "$01$/EGPcEzppS9CvjY4$bBgsmiZQJQr+c2/mH3nZGI0+JcDiaQRs38z/bHRoeyA0BFMR5widg0aCoUB61EYVUPQakbNJlDc3br7QBZrXQ8+zSqLIjLJyD494VGDaoqy8cGFdO1moy3U9I+GGowy3yssxsg=="
 
 func TestEncryptionV1(t *testing.T) {
-	if got := Decrypt(v1Fixture); got != v0FixturePlaintext {
+	if got := mustDecrypt(t, v1Fixture); got != v0FixturePlaintext {
 		t.Errorf("got %q, want %q", got, v0FixturePlaintext)
 	}
 
@@ -320,14 +320,18 @@ func TestEncryptionV1(t *testing.T) {
 		"short nonce":         "$01$" + base64.StdEncoding.EncodeToString([]byte("short")) + "$" + parts[3],
 		"invalid v0 value":    "not base64!",
 	} {
-		expectPanic(t, name, func() { Decrypt(v) })
+		if _, err := Decrypt(v); err == nil {
+			t.Errorf("%s: expected an error", name)
+		}
 	}
 
 	t.Run("another key", func(t *testing.T) {
 		orig := Cryptokey
 		t.Cleanup(func() { Cryptokey = orig })
 		Cryptokey = []byte("Kq3vT9xLm2Rz8WbN4pYc7HsJd1FgA6eU0oViQ5tXhGwE3kMnB8rZyP2lCuS7aDfJ")
-		expectPanic(t, "another key", func() { Decrypt(enc) })
+		if _, err := Decrypt(enc); err == nil {
+			t.Error("expected an error")
+		}
 	})
 }
 
@@ -420,4 +424,72 @@ func TestSampleCryptokeyIsDetected(t *testing.T) {
 	if !strings.Contains(string(b), "cryptokey: \""+SampleCryptokey+"\"") {
 		t.Errorf("the cryptokey placeholder in config.yml-sample must be %q", SampleCryptokey)
 	}
+}
+
+func TestCorruptedRecords(t *testing.T) {
+	corrupted := map[string][]byte{
+		"invalid base64":    []byte("not base64!"),
+		"tampered v1 value": []byte("$01$AAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
+		"not JSON":          []byte(Encrypt("not JSON")),
+	}
+
+	t.Run("an organization with corrupted credentials is skipped", func(t *testing.T) {
+		good := &OrganizationCredentials{SlackTeamID: "TGOOD", SlackAdminUserID: "UADMIN", BambooHROrg: "acme"}
+		if err := PutOrg(good); err != nil {
+			t.Fatal(err)
+		}
+		if err := PutSlackUserToken("TGOOD", "UADMIN", SlackToken{AccessToken: "xoxp"}); err != nil {
+			t.Fatal(err)
+		}
+		for name, v := range corrupted {
+			if err := DB.Put([]byte(TeamPrefix+":TBAD-"+strings.ReplaceAll(name, " ", "-")), v, nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+		found := false
+		for _, o := range GetOrgs() {
+			if strings.HasPrefix(o.SlackTeamID, "TBAD") {
+				t.Errorf("a corrupted organization is returned: %+v", o)
+			}
+			if o.SlackTeamID == "TGOOD" && o.SlackToken.AccessToken == "xoxp" {
+				found = true
+			}
+		}
+		if !found {
+			t.Error("the valid organization must still be returned")
+		}
+	})
+
+	t.Run("a corrupted user token is not found", func(t *testing.T) {
+		for name, v := range corrupted {
+			if err := DB.Put([]byte(UserPrefix+":UBAD:TBAD"), v, nil); err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := GetSlackUserToken("TBAD", "UBAD"); ok {
+				t.Errorf("%s: a corrupted token must not be returned", name)
+			}
+		}
+	})
+
+	t.Run("other records", func(t *testing.T) {
+		for name, v := range corrupted {
+			_ = DB.Put([]byte(WhoIsOutPrefix+":TBAD"), v, nil)
+			if _, err := GetWIOMessage("TBAD"); err == nil {
+				t.Errorf("%s: expected an error for the who-is-out message", name)
+			}
+			_ = DB.Put([]byte(DepartmentsPrefix+":TBAD"), v, nil)
+			if _, ok := GetOrgDepartments("TBAD"); ok {
+				t.Errorf("%s: corrupted departments must not be returned", name)
+			}
+			_ = DB.Put([]byte(StatusPrefix+":TBAD:U1"), v, nil)
+			if got := GetAppliedStatuses("TBAD"); len(got) != 0 {
+				t.Errorf("%s: corrupted statuses must be skipped: %+v", name, got)
+			}
+			_ = DB.Put([]byte(CallbackPrefix+":bad"), v, nil)
+			if _, err := GetInstallCallback("bad"); err == nil {
+				t.Errorf("%s: expected an error for the install callback", name)
+			}
+		}
+		_ = DB.Delete([]byte(CallbackPrefix+":bad"), nil)
+	})
 }

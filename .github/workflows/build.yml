@@ -2,16 +2,18 @@ name: build
 
 on: push
 
+# Third-party actions are pinned to commit SHAs (the version is in the comment), so a moved or
+# compromised tag can't change what runs with the repository token.
 jobs:
   test:
     runs-on: ubuntu-latest
 
     steps:
     - name: Checkout
-      uses: actions/checkout@v4
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
       with:
         go-version-file: go.mod
 
@@ -39,7 +41,7 @@ jobs:
 
     steps:
     - name: Checkout
-      uses: actions/checkout@v4
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       with:
         fetch-depth: 0
 
@@ -66,9 +68,9 @@ jobs:
         echo ${ASSET_NAME}
 
     - name: Set up Go
-      uses: actions/setup-go@v3
+      uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
       with:
-        go-version: ^1.19
+        go-version-file: go.mod
 
     - name: Get project dependencies
       run: go mod download
@@ -80,6 +82,8 @@ jobs:
       run: |
         cp -v "bin/${BOT}" release
         cp -v config.yml-sample release
+        # The binary embeds the Satisfy font, its license goes with every distribution.
+        cp -v third_party/satisfy/LICENSE.txt release/LICENSE-satisfy.txt
 
     - name: Build a debian package for linux
       if: matrix.goos == 'linux'
@@ -89,6 +93,8 @@ jobs:
         cp -v "bin/${BOT}" "${PKG}/opt/${BOT}/bin"
         mkdir -p "${PKG}/etc/${BOT}"
         cp -v config.yml-sample "${PKG}/etc/${BOT}"
+        mkdir -p "${PKG}/usr/share/doc/${BOT}"
+        cp -v third_party/satisfy/LICENSE.txt "${PKG}/usr/share/doc/${BOT}/LICENSE-satisfy.txt"
         sed -i "s/Version:.*/Version: ${{ steps.vars.outputs.release_version }}/" "${PKG}/DEBIAN/control"
         sed -i "s/Architecture:.*/Architecture: ${GOARCH}/" "${PKG}/DEBIAN/control"
         chmod -v u+x "${PKG}/opt/${BOT}/bin/${BOT}" "${PKG}/DEBIAN/postinst" "${PKG}/DEBIAN/postrm"
@@ -107,7 +113,7 @@ jobs:
       run: tar -cvzf ${{ steps.vars.outputs.asset_name }}.tar.gz ${{ steps.vars.outputs.bot_version }}
 
     - name: Upload artifacts
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
       with:
         name: ${{ steps.vars.outputs.asset_name }}
         path: ${{ steps.vars.outputs.asset_name }}.tar.gz
@@ -115,7 +121,7 @@ jobs:
 
     - name: Upload binaries to release
       if: startsWith(github.ref, 'refs/tags/')
-      uses: svenstaro/upload-release-action@v2
+      uses: svenstaro/upload-release-action@29e53e917877a24fad85510ded594ab3c9ca12de # v2.11.5
       with:
         repo_token: ${{ secrets.GITHUB_TOKEN }}
         file: ${{ steps.vars.outputs.asset_name }}.tar.gz

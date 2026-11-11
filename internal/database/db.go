@@ -261,24 +261,25 @@ func Encrypt(data string) string {
 }
 
 // Decrypt decrypts the data encrypted with any of the supported encryption schemes.
-func Decrypt(data string) string {
+func Decrypt(data string) (string, error) {
 	if data == "" {
-		return ""
+		return "", nil
 	}
-	var (
-		res string
-		err error
-	)
 	if strings.HasPrefix(data, versionSeparator) {
-		res, err = decrypt(data)
-	} else {
-		res, err = v0Decrypt(data)
-	}
-	if err != nil {
-		panic(err)
+		return decrypt(data)
 	}
 
-	return res
+	return v0Decrypt(data)
+}
+
+// decodeRecord decrypts a stored record and decodes its JSON into v.
+func decodeRecord(data []byte, v any) error {
+	plaintext, err := Decrypt(string(data))
+	if err != nil {
+		return err
+	}
+
+	return json.Unmarshal([]byte(plaintext), v)
 }
 
 // gcm returns the AES-256-GCM cipher of the v1 encryption scheme.
@@ -360,8 +361,11 @@ func GetOrgs() []OrganizationCredentials {
 		}
 		slackTeamID := string(key)[len(TeamPrefix)+1:]
 		var credentials OrganizationCredentials
-		if err := json.Unmarshal([]byte(Decrypt(string(iter.Value()))), &credentials); err != nil {
-			log.Fatalf("Could not decode a JSON while retrieving an organization credentials: %v", err)
+		if err := decodeRecord(iter.Value(), &credentials); err != nil {
+			// One corrupted record must not stop the other organizations.
+			log.Errorf("Could not decode the credentials of the organization %s: %v", slackTeamID, err)
+
+			continue
 		}
 
 		credentials.SlackTeamID = slackTeamID
@@ -392,7 +396,7 @@ func GetOrg(slackTeamID string) (OrganizationCredentials, bool) {
 		return res, false
 	}
 
-	if err := json.Unmarshal([]byte(Decrypt(string(data))), &res); err != nil {
+	if err := decodeRecord(data, &res); err != nil {
 		log.Errorf("Could not decode a JSON while retrieving an organization: %v", err)
 
 		return res, false
@@ -420,8 +424,10 @@ func GetSlackUserToken(slackTeamID string, slackUserID string) (SlackToken, bool
 		return token, false
 	}
 
-	if err := json.Unmarshal([]byte(Decrypt(string(data))), &token); err != nil {
-		log.Fatalf("Could not decode a JSON while retrieving a user token: %v", err)
+	if err := decodeRecord(data, &token); err != nil {
+		log.Errorf("Could not decode a user token: %v", err)
+
+		return token, false
 	}
 
 	return token, true
@@ -448,7 +454,7 @@ func GetWIOMessage(slackTeamID string) ([]WhoIsOutMessage, error) {
 	if err != nil {
 		return res, err
 	}
-	if err := json.Unmarshal([]byte(Decrypt(string(data))), &res); err != nil {
+	if err := decodeRecord(data, &res); err != nil {
 		log.Errorf("Could not decode a JSON while retrieving a who-is-out message: %v", err)
 
 		return res, err
@@ -497,7 +503,7 @@ func GetOrgDepartments(slackTeamID string) (*DepartmentCache, bool) {
 	if len(data) == 0 {
 		return res, false
 	}
-	if err := json.Unmarshal([]byte(Decrypt(string(data))), res); err != nil {
+	if err := decodeRecord(data, res); err != nil {
 		log.Errorf("Could not decode a JSON while retrieving departments: %v", err)
 
 		return nil, false
@@ -522,15 +528,9 @@ func PutInstallCallback(state string, data InstallCallback) error {
 }
 
 // decodeInstallCallback decrypts and decodes a stored install callback.
-func decodeInstallCallback(data []byte) (result *InstallCallback, err error) {
-	defer func() {
-		// Decrypt panics on a corrupted record.
-		if r := recover(); r != nil {
-			result, err = nil, fmt.Errorf("unable to decrypt: %v", r)
-		}
-	}()
-	result = &InstallCallback{}
-	if err = json.Unmarshal([]byte(Decrypt(string(data))), result); err != nil {
+func decodeInstallCallback(data []byte) (*InstallCallback, error) {
+	result := &InstallCallback{}
+	if err := decodeRecord(data, result); err != nil {
 		return nil, err
 	}
 
@@ -605,7 +605,7 @@ func GetAppliedStatuses(slackTeamID string) map[string]AppliedStatus {
 	for iter.Next() {
 		userID := string(iter.Key())[len(prefix):]
 		var s AppliedStatus
-		if err := json.Unmarshal([]byte(Decrypt(string(iter.Value()))), &s); err != nil {
+		if err := decodeRecord(iter.Value(), &s); err != nil {
 			log.Errorf("Could not decode a JSON while retrieving an applied status: %v", err)
 
 			continue
