@@ -395,3 +395,44 @@ func TestCommandHandlerRequestAge(t *testing.T) {
 		})
 	}
 }
+
+func TestCommandHandlerBodyLimit(t *testing.T) {
+	loadTestConfig(t, "slack_signing_secret: \"signing-secret\"\n")
+	base := url.Values{
+		"team_id": {"T1"}, "user_id": {"U1"}, "response_url": {"https://hooks.slack.com/x"},
+		"text": {"install acme 0123456789abcdef0123456789abcdef01234567"},
+	}.Encode()
+	// pad makes the body exactly the given size with an extra form field.
+	pad := func(size int) string {
+		const name = "&padding="
+		return base + name + strings.Repeat("x", size-len(base)-len(name))
+	}
+	for _, c := range []struct {
+		name      string
+		size      int
+		processed bool
+	}{
+		{"at the limit", MaxCommandBodyBytes, true},
+		{"over the limit", MaxCommandBodyBytes + 1, false},
+		{"far over the limit", 10 << 20, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			calls := stubProcessInstall(t)
+			body := pad(c.size)
+			ts := strconv.FormatInt(time.Now().Unix(), 10)
+			r := httptest.NewRequest(http.MethodPost, "/command", strings.NewReader(body))
+			r.Header.Set("X-Slack-Request-Timestamp", ts)
+			r.Header.Set("X-Slack-Signature", slackSignature("signing-secret", ts, body))
+			w := httptest.NewRecorder()
+
+			CommandHandler(w, r)
+
+			if processed := len(*calls) == 1; processed != c.processed {
+				t.Errorf("got HTTP %d, processed %v, want %v", w.Code, processed, c.processed)
+			}
+			if !c.processed && w.Code != http.StatusRequestEntityTooLarge {
+				t.Errorf("got HTTP %d, want 413", w.Code)
+			}
+		})
+	}
+}

@@ -124,20 +124,45 @@ func main() {
 		if err != nil {
 			log.Fatalf("Cannot load x509 key pair: %v", err)
 		}
-		s := &http.Server{
-			Addr:    endpoint,
-			Handler: nil,
-			TLSConfig: &tls.Config{
-				Certificates: []tls.Certificate{cert},
-			},
-		}
-		log.Fatal(s.ListenAndServeTLS("", ""))
+		log.Fatal(NewServer(endpoint, &cert).ListenAndServeTLS("", ""))
 	} else {
-		log.Infof("Starting HTTP server (%s).", endpoint)
-		s := &http.Server{
-			Addr:    endpoint,
-			Handler: nil,
-		}
-		log.Fatal(s.ListenAndServe())
+		WarnPlainHTTP(endpoint)
+		log.Fatal(NewServer(endpoint, nil).ListenAndServe())
 	}
+}
+
+// Server timeouts. Slow or idle clients must not be able to hold connections open indefinitely.
+// The install command calls Slack and BambooHR before responding, so the write timeout leaves room for it.
+const (
+	ServerReadHeaderTimeout = 5 * time.Second
+	ServerReadTimeout       = 15 * time.Second
+	ServerWriteTimeout      = 30 * time.Second
+	ServerIdleTimeout       = 2 * time.Minute
+)
+
+// NewServer creates the HTTP server. It serves HTTPS with TLS 1.2 or newer when the certificate is provided.
+func NewServer(endpoint string, cert *tls.Certificate) *http.Server {
+	s := &http.Server{
+		Addr:              endpoint,
+		Handler:           nil,
+		ReadHeaderTimeout: ServerReadHeaderTimeout,
+		ReadTimeout:       ServerReadTimeout,
+		WriteTimeout:      ServerWriteTimeout,
+		IdleTimeout:       ServerIdleTimeout,
+	}
+	if cert != nil {
+		s.TLSConfig = &tls.Config{
+			Certificates: []tls.Certificate{*cert},
+			MinVersion:   tls.VersionTLS12,
+		}
+	}
+
+	return s
+}
+
+// WarnPlainHTTP warns that the server is started without TLS.
+func WarnPlainHTTP(endpoint string) {
+	log.Warnf("Starting a plain HTTP server (%s). Slack requests, OAuth codes and BambooHR secrets "+
+		"travel unencrypted unless a reverse proxy terminates TLS in front of it. "+
+		"Set ssl_cert and ssl_key in the config.yml to serve HTTPS.", endpoint)
 }

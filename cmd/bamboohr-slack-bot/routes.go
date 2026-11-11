@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -66,6 +67,9 @@ func RedactCommandPayload(params url.Values) url.Values {
 	}
 	return res
 }
+
+// MaxCommandBodyBytes is the maximum size of a slash command request body. Slack sends a few kilobytes.
+const MaxCommandBodyBytes = 64 << 10
 
 // MaxRequestAge is the maximum difference between the X-Slack-Request-Timestamp and the server time.
 // A signed request is rejected after it, so a captured request can't be replayed later.
@@ -135,7 +139,14 @@ func CommandHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	payload, err := io.ReadAll(r.Body)
+	// The whole body is read before the signature can be verified, so it must be limited.
+	payload, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxCommandBodyBytes))
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		http.Error(w, "Request Entity Too Large", http.StatusRequestEntityTooLarge)
+
+		return
+	}
 	if err != nil {
 		log.Errorf("Error reading the body while handling the POST %s request: %v", r.URL.Path, err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
