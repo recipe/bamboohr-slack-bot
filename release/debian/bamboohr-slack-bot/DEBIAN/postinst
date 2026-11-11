@@ -2,10 +2,45 @@
 
 set -e
 
+APP=bamboohr-slack-bot
+CONF_DIR=/etc/$APP
+DB_DIR=/opt/$APP/db
+
+# The service runs as its own system user without a login shell and a home directory.
+if ! getent passwd "$APP" > /dev/null; then
+  useradd --system --user-group --home-dir /nonexistent --no-create-home --shell /usr/sbin/nologin "$APP"
+fi
+
+# The database is the only place the service writes to. Existing databases were created by root.
+install -d -m 0700 -o "$APP" -g "$APP" "$DB_DIR"
+chown -R "$APP:$APP" "$DB_DIR"
+chmod -R go-rwx "$DB_DIR"
+
 # Set a cryptokey with a random string
 T="$(openssl rand -base64 48)"
-sed -i "s#cryptokey.*#cryptokey: \"$T\"#" /etc/bamboohr-slack-bot/config.yml-sample
+sed -i "s#cryptokey.*#cryptokey: \"$T\"#" "$CONF_DIR/config.yml-sample"
 
-systemctl enable bamboohr-slack-bot
+# The config contains secrets. The service reads it through its group and can't change it.
+chown root:"$APP" "$CONF_DIR"
+chmod 0750 "$CONF_DIR"
+for f in "$CONF_DIR"/config.yml*; do
+  if [ -f "$f" ]; then
+    chown root:"$APP" "$f"
+    chmod 0640 "$f"
+  fi
+done
+
+# The service can't read files that only root can read, e.g. Let's Encrypt private keys.
+if [ -f "$CONF_DIR/config.yml" ]; then
+  for key in ssl_cert ssl_key; do
+    path="$(sed -n "s/^$key:[[:space:]]*\"\{0,1\}\([^\"]*\)\"\{0,1\}[[:space:]]*\$/\1/p" "$CONF_DIR/config.yml")"
+    if [ -n "$path" ] && ! runuser -u "$APP" -- test -r "$path"; then
+      echo "WARNING: $APP can't read the $key file $path, the service will fail to start." >&2
+      echo "WARNING: Terminate TLS in nginx instead (/usr/share/doc/$APP/nginx.conf) or grant the $APP group read access." >&2
+    fi
+  done
+fi
+
+systemctl enable "$APP"
 systemctl daemon-reload
 systemctl restart rsyslog

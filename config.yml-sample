@@ -1,4 +1,5 @@
-server_endpoint: "localhost:443"
+# The loopback behind a reverse proxy which terminates TLS (see the README).
+server_endpoint: "127.0.0.1:8087"
 slack_client_id: ""
 slack_client_secret: ""
 slack_signing_secret: ""

@@ -8,6 +8,7 @@ import (
 	"github.com/recipe/bamboohr-slack-bot/internal/database"
 	log "github.com/sirupsen/logrus"
 	"html/template"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -160,8 +161,28 @@ func NewServer(endpoint string, cert *tls.Certificate) *http.Server {
 	return s
 }
 
-// WarnPlainHTTP warns that the server is started without TLS.
+// IsLoopbackEndpoint tells whether the server endpoint ("host:port") only accepts local connections,
+// e.g. behind a reverse proxy on the same host. An empty host listens on all interfaces.
+func IsLoopbackEndpoint(endpoint string) bool {
+	host, _, err := net.SplitHostPort(endpoint)
+	if err != nil {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// WarnPlainHTTP warns that the server is started without TLS on an address that other hosts can reach.
+// Plain HTTP on the loopback interface is expected behind a reverse proxy that terminates TLS.
 func WarnPlainHTTP(endpoint string) {
+	if IsLoopbackEndpoint(endpoint) {
+		log.Infof("Starting HTTP server (%s).", endpoint)
+
+		return
+	}
 	log.Warnf("Starting a plain HTTP server (%s). Slack requests, OAuth codes and BambooHR secrets "+
 		"travel unencrypted unless a reverse proxy terminates TLS in front of it. "+
 		"Set ssl_cert and ssl_key in the config.yml to serve HTTPS.", endpoint)

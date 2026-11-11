@@ -73,12 +73,49 @@ func TestNewServer(t *testing.T) {
 	}
 }
 
-func TestWarnPlainHTTP(t *testing.T) {
-	hook := captureLogs(t)
-	WarnPlainHTTP("localhost:8080")
-	e := hook.LastEntry()
-	if e == nil || e.Level != log.WarnLevel || !strings.Contains(e.Message, "plain HTTP") ||
-		!strings.Contains(e.Message, "localhost:8080") || !strings.Contains(e.Message, "ssl_cert") {
-		t.Errorf("unexpected log entry %+v", e)
+func TestIsLoopbackEndpoint(t *testing.T) {
+	for endpoint, want := range map[string]bool{
+		"127.0.0.1:8087":   true,
+		"127.0.0.2:8087":   true,
+		"[::1]:8087":       true,
+		"localhost:8087":   true,
+		":8087":            false,
+		"0.0.0.0:8087":     false,
+		"[::]:8087":        false,
+		"10.18.0.6:8443":   false,
+		"203.0.113.5:443":  false,
+		"example.com:443":  false,
+		"localhost":        false,
+		"":                 false,
+		"127.0.0.1.evil:1": false,
+	} {
+		if got := IsLoopbackEndpoint(endpoint); got != want {
+			t.Errorf("%q: got %v, want %v", endpoint, got, want)
+		}
 	}
+}
+
+func TestWarnPlainHTTP(t *testing.T) {
+	t.Run("reachable from other hosts", func(t *testing.T) {
+		hook := captureLogs(t)
+		WarnPlainHTTP("10.18.0.6:8443")
+		e := hook.LastEntry()
+		if e == nil || e.Level != log.WarnLevel || !strings.Contains(e.Message, "plain HTTP") ||
+			!strings.Contains(e.Message, "10.18.0.6:8443") || !strings.Contains(e.Message, "ssl_cert") {
+			t.Errorf("unexpected log entry %+v", e)
+		}
+	})
+
+	t.Run("loopback behind a reverse proxy", func(t *testing.T) {
+		hook := captureLogs(t)
+		WarnPlainHTTP("127.0.0.1:8087")
+		for _, e := range hook.AllEntries() {
+			if e.Level <= log.WarnLevel {
+				t.Errorf("unexpected warning %+v", e)
+			}
+		}
+		if e := hook.LastEntry(); e == nil || !strings.Contains(e.Message, "127.0.0.1:8087") {
+			t.Errorf("the server start must be logged: %+v", e)
+		}
+	})
 }
