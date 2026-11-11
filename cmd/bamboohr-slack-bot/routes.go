@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -144,10 +146,9 @@ func CommandHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	teamID := q.Get("team_id")
 	userID := q.Get("user_id")
-	triggerID := q.Get("trigger_id")
 	responseURL := q.Get("response_url")
 	text := q.Get("text")
-	if teamID == "" || userID == "" || triggerID == "" || responseURL == "" {
+	if teamID == "" || userID == "" || responseURL == "" {
 		http.Error(w, "Invalid request.", http.StatusBadRequest)
 
 		return
@@ -185,7 +186,7 @@ func CommandHandler(w http.ResponseWriter, r *http.Request) {
 				BambooHROrg:    tokens[1],
 				BambooHRSecret: tokens[2],
 			}
-			processInstall(cb, triggerID, teamID, userID, true)
+			processInstall(cb, teamID, userID, true)
 
 			return
 		} else if tokens[0] == "in" && len(tokens) > 1 {
@@ -379,6 +380,16 @@ func RedirectHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// NewState generates a random, unguessable OAuth state. It identifies the install callback,
+// so it must not be derived from anything that is sent around, like the Slack trigger ID.
+func NewState() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
 // processInstall processes the install command. It is replaced in tests.
 var processInstall = ProcessInstallCommand
 
@@ -418,7 +429,7 @@ func FinishInstall(state string, teamID string, userID string) {
 		return
 	}
 
-	processInstall(*cb, state, teamID, userID, false)
+	processInstall(*cb, teamID, userID, false)
 }
 
 // PostToResponseURL responds back to a Slack user with the message using the callback URL provided with
@@ -473,7 +484,6 @@ func PostToResponseURL(URL string, message string) error {
 // It validates the request and all necessary permissions.
 func ProcessInstallCommand(
 	callback database.InstallCallback,
-	triggerID string,
 	teamID string,
 	userID string,
 	requestToken bool,
@@ -496,7 +506,18 @@ func ProcessInstallCommand(
 		if requestToken {
 			// Store the secret to the database to proceed later right after a redirect,
 			// as the Team ID and User ID should come with redirect request.
-			if err := database.PutInstallCallback(triggerID, callback); err != nil {
+			// The callback is identified by the random OAuth state.
+			state, err := NewState()
+			if err != nil {
+				log.Errorf("Could not generate an OAuth state: %v", err)
+				_ = PostToResponseURL(
+					callback.ResponseURL,
+					"Sorry, internal error occurred. Please try again later.",
+				)
+
+				return
+			}
+			if err := database.PutInstallCallback(state, callback); err != nil {
 				_ = PostToResponseURL(
 					callback.ResponseURL,
 					"Sorry, internal error occurred. Please try again later.",
@@ -505,7 +526,7 @@ func ProcessInstallCommand(
 				return
 			}
 			log.Debug("Responding to the install command with a request for additional permissions.")
-			// Respond with install button to request necessary permissions passing the triggerID as the "code"
+			// Respond with install button to request necessary permissions passing the state
 			_ = PostToResponseURL(
 				callback.ResponseURL,
 				`{
@@ -519,7 +540,7 @@ func ProcessInstallCommand(
                     "text": "Review Permissions",
                     "type": "button",
                     "url": "https://slack.com/oauth/authorize?client_id=`+url.QueryEscape(slackClientID)+
-					`&state=`+url.QueryEscape(triggerID)+
+					`&state=`+url.QueryEscape(state)+
 					`&scope=`+SlackScope+`"
                 }
             ]

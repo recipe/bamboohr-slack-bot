@@ -23,6 +23,7 @@ type responseURL struct {
 	*httptest.Server
 	mu       sync.Mutex
 	messages []string
+	bodies   []string
 }
 
 func newResponseURL(t *testing.T) *responseURL {
@@ -34,6 +35,7 @@ func newResponseURL(t *testing.T) *responseURL {
 		_ = json.Unmarshal(b, &m)
 		r.mu.Lock()
 		r.messages = append(r.messages, m["text"])
+		r.bodies = append(r.bodies, string(b))
 		r.mu.Unlock()
 	}))
 	t.Cleanup(r.Close)
@@ -41,9 +43,9 @@ func newResponseURL(t *testing.T) *responseURL {
 }
 
 type processCall struct {
-	cb                    database.InstallCallback
-	triggerID, team, user string
-	requestToken          bool
+	cb           database.InstallCallback
+	team, user   string
+	requestToken bool
 }
 
 // stubProcessInstall replaces the installation processing which calls Slack and BambooHR.
@@ -51,8 +53,8 @@ func stubProcessInstall(t *testing.T) *[]processCall {
 	t.Helper()
 	calls := &[]processCall{}
 	orig := processInstall
-	processInstall = func(cb database.InstallCallback, triggerID, team, user string, requestToken bool) {
-		*calls = append(*calls, processCall{cb, triggerID, team, user, requestToken})
+	processInstall = func(cb database.InstallCallback, team, user string, requestToken bool) {
+		*calls = append(*calls, processCall{cb, team, user, requestToken})
 	}
 	t.Cleanup(func() { processInstall = orig })
 	return calls
@@ -87,7 +89,7 @@ func TestFinishInstall(t *testing.T) {
 
 		FinishInstall("s1", "T1", "U1")
 
-		if len(*calls) != 1 || (*calls)[0] != (processCall{cb, "s1", "T1", "U1", false}) {
+		if len(*calls) != 1 || (*calls)[0] != (processCall{cb, "T1", "U1", false}) {
 			t.Errorf("got %+v", *calls)
 		}
 		if len(resp.messages) != 0 {
@@ -173,5 +175,83 @@ func TestInstallCommandStoresTheRequester(t *testing.T) {
 	c := (*calls)[0]
 	if c.cb.SlackTeamID != "T1" || c.cb.SlackUserID != "U1" || c.cb.BambooHROrg != "acme" || !c.requestToken {
 		t.Errorf("unexpected install callback %+v", c)
+	}
+}
+
+func TestNewState(t *testing.T) {
+	seen := map[string]bool{}
+	for i := 0; i < 100; i++ {
+		s, err := NewState()
+		if err != nil {
+			t.Fatal(err)
+		}
+		// 32 random bytes, URL-safe
+		if len(s) != 43 || url.QueryEscape(s) != s {
+			t.Errorf("unexpected state %q", s)
+		}
+		if seen[s] {
+			t.Fatalf("the state %q is repeated", s)
+		}
+		seen[s] = true
+	}
+}
+
+// buttonState extracts the OAuth state from the "Review Permissions" button posted to the response URL.
+func buttonState(t *testing.T, body string) string {
+	t.Helper()
+	var m struct {
+		Attachments []struct {
+			Actions []struct {
+				URL string `json:"url"`
+			} `json:"actions"`
+		} `json:"attachments"`
+	}
+	if err := json.Unmarshal([]byte(body), &m); err != nil {
+		t.Fatalf("unexpected message %s: %v", body, err)
+	}
+	if len(m.Attachments) != 1 || len(m.Attachments[0].Actions) != 1 {
+		t.Fatalf("no button in %s", body)
+	}
+	u, err := url.Parse(m.Attachments[0].Actions[0].URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.Host != "slack.com" || u.Query().Get("client_id") != "client-id" {
+		t.Errorf("unexpected button URL %s", u)
+	}
+	return u.Query().Get("state")
+}
+
+func TestInstallCommandRequestsPermissionsWithRandomState(t *testing.T) {
+	loadTestConfig(t, "slack_client_id: \"client-id\"\n")
+	resp := newResponseURL(t)
+	cb := database.InstallCallback{
+		SlackTeamID:    "TSTATE",
+		SlackUserID:    "U1",
+		ResponseURL:    resp.URL,
+		BambooHROrg:    "acme",
+		BambooHRSecret: "0123456789abcdef0123456789abcdef01234567",
+	}
+
+	// The user hasn't authorized the app yet, so the permissions are requested.
+	ProcessInstallCommand(cb, "TSTATE", "U1", true)
+	ProcessInstallCommand(cb, "TSTATE", "U1", true)
+
+	if len(resp.bodies) != 2 {
+		t.Fatalf("got messages %v", resp.bodies)
+	}
+	s1, s2 := buttonState(t, resp.bodies[0]), buttonState(t, resp.bodies[1])
+	if len(s1) != 43 || s1 == s2 {
+		t.Errorf("the states must be random: %q, %q", s1, s2)
+	}
+	for _, s := range []string{s1, s2} {
+		got, err := database.GetInstallCallback(s)
+		if err != nil {
+			t.Fatalf("no install callback for the state %q: %v", s, err)
+		}
+		if *got != cb {
+			t.Errorf("got %+v, want %+v", *got, cb)
+		}
+		_ = database.DeleteInstallCallback(s)
 	}
 }
