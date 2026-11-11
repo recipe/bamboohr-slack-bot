@@ -70,7 +70,11 @@ func main() {
 		log.Fatalf("An invalid log_level (%s) value in the config.yml.", logLevel)
 	}
 	log.SetLevel(level)
-	database.Cryptokey = []byte(Conf("cryptokey"))
+	cryptokey := Conf("cryptokey")
+	if err := database.ValidateCryptokey(cryptokey); err != nil {
+		log.Fatalf("Invalid cryptokey in the config.yml: %v", err)
+	}
+	database.Cryptokey = []byte(cryptokey)
 
 	go func() {
 		for {

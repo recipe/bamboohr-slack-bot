@@ -387,3 +387,37 @@ func TestCreateKey(t *testing.T) {
 		t.Error("different cryptokeys must produce different keys")
 	}
 }
+
+func TestValidateCryptokey(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		key   string
+		valid bool
+	}{
+		{"the postinst default: openssl rand -base64 48", "Kq3vT9xLm2Rz8WbN4pYc7HsJd1FgA6eU0oViQ5tXhGwE3kMnB8rZyP2lCuS7aDfJ", true},
+		{"minimum length", strings.Repeat("k", MinCryptokeyLength), true},
+		{"too short", strings.Repeat("k", MinCryptokeyLength-1), false},
+		{"empty", "", false},
+		{"sample placeholder", SampleCryptokey, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			err := ValidateCryptokey(c.key)
+			if (err == nil) != c.valid {
+				t.Errorf("got %v, want valid=%v", err, c.valid)
+			}
+			if err != nil && c.key != "" && strings.Contains(err.Error(), c.key) {
+				t.Errorf("the error must not reveal the key: %v", err)
+			}
+		})
+	}
+}
+
+func TestSampleCryptokeyIsDetected(t *testing.T) {
+	b, err := os.ReadFile("../../config.yml-sample")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "cryptokey: \""+SampleCryptokey+"\"") {
+		t.Errorf("the cryptokey placeholder in config.yml-sample must be %q", SampleCryptokey)
+	}
+}

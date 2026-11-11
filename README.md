@@ -46,7 +46,6 @@ cp /etc/bamboohr-slack-bot/config.yml-sample /etc/bamboohr-slack-bot/config.yml
 
 Set `server_endpoint` and provide `slack_client_id`, `slack_client_secret`, and `slack_signing_secret`,
 which are available in your Slack application settings.
-Use the pre-generated `cryptokey` value or provide your own of the same length (64 characters).
 To run the application over HTTPS, you will need an SSL certificate —
 either self-signed or issued by [Let's Encrypt](https://letsencrypt.org/).
 

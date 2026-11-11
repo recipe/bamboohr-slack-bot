@@ -34,6 +34,25 @@ const (
 var DB = New()
 var Cryptokey []byte
 
+// MinCryptokeyLength is the minimum length of the cryptokey.
+const MinCryptokeyLength = 32
+
+// SampleCryptokey is the placeholder value of the cryptokey in the config.yml-sample.
+const SampleCryptokey = "64 random ascii characters"
+
+// ValidateCryptokey checks that the cryptokey is not too weak to protect the stored secrets.
+func ValidateCryptokey(key string) error {
+	const hint = " Generate a new one with `openssl rand -base64 48`."
+	if key == SampleCryptokey {
+		return fmt.Errorf("the cryptokey is the sample placeholder value." + hint)
+	}
+	if len(key) < MinCryptokeyLength {
+		return fmt.Errorf("the cryptokey must be at least %d characters long."+hint, MinCryptokeyLength)
+	}
+
+	return nil
+}
+
 type OrganizationCredentials struct {
 	SlackTeamID      string     `json:"-"`
 	SlackAdminUserID string     `json:"admin_user"`
