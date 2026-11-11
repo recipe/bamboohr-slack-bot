@@ -67,6 +67,10 @@ func RedactCommandPayload(params url.Values) url.Values {
 	return res
 }
 
+// MaxRequestAge is the maximum difference between the X-Slack-Request-Timestamp and the server time.
+// A signed request is rejected after it, so a captured request can't be replayed later.
+const MaxRequestAge = 5 * time.Minute
+
 // VerifySlackSignature checks the X-Slack-Signature header of a request signed by Slack:
 // "v0=" followed by the hex HMAC-SHA256 of "v0:<timestamp>:<body>" with the signing secret.
 // The MACs are compared in constant time, so the response time doesn't reveal how much of a forged
@@ -125,7 +129,7 @@ func CommandHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	tts := time.Unix(its, 0)
 	clockSkew := math.Abs(float64(time.Now().Unix() - tts.Unix()))
-	if clockSkew > 1000 {
+	if clockSkew > MaxRequestAge.Seconds() {
 		http.Error(w, fmt.Sprintf("Clock skew: %d sec.", int(clockSkew)), http.StatusForbidden)
 
 		return

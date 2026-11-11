@@ -355,3 +355,43 @@ func TestCommandHandlerRejectsInvalidSignature(t *testing.T) {
 		t.Errorf("the command must not be processed: %+v", *calls)
 	}
 }
+
+func TestCommandHandlerRequestAge(t *testing.T) {
+	loadTestConfig(t, "slack_signing_secret: \"signing-secret\"\n")
+	body := url.Values{
+		"team_id": {"T1"}, "user_id": {"U1"}, "response_url": {"https://hooks.slack.com/x"},
+		"text": {"install acme 0123456789abcdef0123456789abcdef01234567"},
+	}.Encode()
+	max := int64(MaxRequestAge.Seconds())
+	for _, c := range []struct {
+		name      string
+		age       int64
+		processed bool
+	}{
+		{"now", 0, true},
+		{"within the limit", max - 5, true},
+		{"from the future within the limit", -(max - 5), true},
+		{"too old", max + 5, false},
+		{"too far in the future", -(max + 5), false},
+		{"an hour old", 3600, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			calls := stubProcessInstall(t)
+			// The request is signed correctly, only the timestamp matters.
+			ts := strconv.FormatInt(time.Now().Unix()-c.age, 10)
+			r := httptest.NewRequest(http.MethodPost, "/command", strings.NewReader(body))
+			r.Header.Set("X-Slack-Request-Timestamp", ts)
+			r.Header.Set("X-Slack-Signature", slackSignature("signing-secret", ts, body))
+			w := httptest.NewRecorder()
+
+			CommandHandler(w, r)
+
+			if processed := len(*calls) == 1; processed != c.processed {
+				t.Errorf("got HTTP %d, processed %v, want %v", w.Code, processed, c.processed)
+			}
+			if !c.processed && w.Code != http.StatusForbidden {
+				t.Errorf("got HTTP %d, want 403", w.Code)
+			}
+		})
+	}
+}
