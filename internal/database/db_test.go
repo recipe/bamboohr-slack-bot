@@ -104,3 +104,38 @@ func TestOrgs(t *testing.T) {
 		t.Error("the organization is not found")
 	}
 }
+
+func TestInstallCallback(t *testing.T) {
+	cb := InstallCallback{
+		ResponseURL:    "https://hooks.slack.com/commands/T1/123/abc",
+		BambooHROrg:    "acme",
+		BambooHRSecret: "0123456789abcdef0123456789abcdef01234567",
+	}
+	if err := PutInstallCallback("123.456", cb); err != nil {
+		t.Fatal(err)
+	}
+
+	// The secret must be encrypted at rest.
+	raw, err := DB.Get([]byte(CallbackPrefix+":123.456"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), cb.BambooHRSecret) {
+		t.Error("the install callback is stored unencrypted")
+	}
+
+	got, err := GetInstallCallback("123.456")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *got != cb {
+		t.Errorf("got %+v, want %+v", *got, cb)
+	}
+
+	if err := DeleteInstallCallback("123.456"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := GetInstallCallback("123.456"); err == nil {
+		t.Error("expected an error for a deleted callback")
+	}
+}

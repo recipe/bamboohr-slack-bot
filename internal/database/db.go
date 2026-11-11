@@ -400,8 +400,8 @@ func GetInstallCallback(triggerID string) (*InstallCallback, error) {
 		return nil, err
 	}
 	result := &InstallCallback{}
-	if err = json.Unmarshal(b, result); err != nil {
-		log.Errorf("Could not dencode to a JSON while reading an install callback: %v", err)
+	if err = json.Unmarshal([]byte(Decrypt(string(b))), result); err != nil {
+		log.Errorf("Could not decode a JSON while reading an install callback: %v", err)
 
 		return nil, err
 	}
