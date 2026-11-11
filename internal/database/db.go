@@ -39,6 +39,9 @@ type OrganizationCredentials struct {
 type SlackToken slack.OAuthResponse
 
 type InstallCallback struct {
+	// The workspace and the user who ran the install command. Only they can finish the installation.
+	SlackTeamID    string `json:"slack_team_id"`
+	SlackUserID    string `json:"slack_user_id"`
 	ResponseURL    string `json:"response_url"`
 	BambooHROrg    string `json:"bamboohr_org"`
 	BambooHRSecret string `json:"bamboohr_secret"`

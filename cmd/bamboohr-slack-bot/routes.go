@@ -179,11 +179,13 @@ func CommandHandler(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 
 			cb := database.InstallCallback{
+				SlackTeamID:    teamID,
+				SlackUserID:    userID,
 				ResponseURL:    responseURL,
 				BambooHROrg:    tokens[1],
 				BambooHRSecret: tokens[2],
 			}
-			ProcessInstallCommand(cb, triggerID, teamID, userID, true)
+			processInstall(cb, triggerID, teamID, userID, true)
 
 			return
 		} else if tokens[0] == "in" && len(tokens) > 1 {
@@ -373,23 +375,50 @@ func RedirectHandler(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/?success=1", http.StatusSeeOther)
 
 	if state != "" {
-		go func() {
-			log.Debug("Redirect request: trying to finish the installation request.")
-			cb, err := database.GetInstallCallback(state)
-			if err != nil {
-				log.Debug("No install callback found.")
-
-				return
-			}
-			ProcessInstallCommand(*cb, state, token.TeamID, token.UserID, false)
-
-			log.Debug("Redirect request: removing the callback from the database.")
-			// Remove callback as it's only considered to be a two-step workflow
-			if err = database.DeleteInstallCallback(state); err != nil {
-				log.Errorf("Could not remove the install callback from the database: %v", err)
-			}
-		}()
+		go FinishInstall(state, token.TeamID, token.UserID)
 	}
+}
+
+// processInstall processes the install command. It is replaced in tests.
+var processInstall = ProcessInstallCommand
+
+// FinishInstall finishes the installation that has been started by the install command and required
+// the user to authorize the app. The installation is finished only if the authorized user is the one
+// who ran the install command in the same workspace. The callback is removed in any case.
+func FinishInstall(state string, teamID string, userID string) {
+	log.Debug("Redirect request: trying to finish the installation request.")
+	cb, err := database.GetInstallCallback(state)
+	if err != nil {
+		log.Debug("No install callback found.")
+
+		return
+	}
+
+	defer func() {
+		log.Debug("Redirect request: removing the callback from the database.")
+		// Remove callback as it's only considered to be a two-step workflow
+		if err := database.DeleteInstallCallback(state); err != nil {
+			log.Errorf("Could not remove the install callback from the database: %v", err)
+		}
+	}()
+
+	if cb.SlackTeamID == "" || cb.SlackTeamID != teamID || cb.SlackUserID != userID {
+		log.WithFields(log.Fields{
+			"CallbackTeamID": cb.SlackTeamID,
+			"CallbackUserID": cb.SlackUserID,
+			"TeamID":         teamID,
+			"UserID":         userID,
+		}).Warn("Rejecting the install callback: the app has been authorized by another user or workspace.")
+		_ = PostToResponseURL(
+			cb.ResponseURL,
+			"The installation has not been finished: the app has been authorized by another Slack user "+
+				"or in another workspace. Please run the install command again and authorize the app yourself.",
+		)
+
+		return
+	}
+
+	processInstall(*cb, state, teamID, userID, false)
 }
 
 // PostToResponseURL responds back to a Slack user with the message using the callback URL provided with
