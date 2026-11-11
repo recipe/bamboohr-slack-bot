@@ -29,18 +29,24 @@ const Redacted = "****"
 // commandSubcommands are the known first words of the command text. They are safe to log.
 var commandSubcommands = map[string]bool{"install": true, "in": true, "help": true}
 
-// RedactCommandPayload returns a copy of the slash command payload that is safe to log.
-// The verification token and the response URL are credentials.
-func RedactCommandPayload(params url.Values) url.Values {
-	res := make(url.Values, len(params))
-	for k, v := range params {
+// RedactValues returns a copy of the values where the specified keys are masked. Missing keys are not added.
+func RedactValues(values url.Values, keys ...string) url.Values {
+	res := make(url.Values, len(values))
+	for k, v := range values {
 		res[k] = append([]string(nil), v...)
 	}
-	for _, k := range []string{"token", "response_url"} {
+	for _, k := range keys {
 		if res.Has(k) {
 			res.Set(k, Redacted)
 		}
 	}
+	return res
+}
+
+// RedactCommandPayload returns a copy of the slash command payload that is safe to log.
+// The verification token and the response URL are credentials.
+func RedactCommandPayload(params url.Values) url.Values {
+	res := RedactValues(params, "token", "response_url")
 	if res.Has("text") {
 		text := ""
 		fields := strings.Fields(res.Get("text"))
@@ -292,7 +298,12 @@ func RedirectHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.WithFields(log.Fields{"RequestURI": r.RequestURI}).Debug("Redirect request.")
+	// The OAuth code can be exchanged for a token, and the state identifies the install callback
+	// which contains the BambooHR secret.
+	log.WithFields(log.Fields{
+		"Path":  r.URL.Path,
+		"Query": RedactValues(r.URL.Query(), "code", "state").Encode(),
+	}).Debug("Redirect request.")
 
 	slackClientSecret, ok := config.String("slack_client_secret")
 	if !ok {
