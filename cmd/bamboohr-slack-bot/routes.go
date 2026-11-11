@@ -23,6 +23,42 @@ import (
 	"github.com/slack-go/slack"
 )
 
+// Redacted replaces sensitive values in logs.
+const Redacted = "****"
+
+// commandSubcommands are the known first words of the command text. They are safe to log.
+var commandSubcommands = map[string]bool{"install": true, "in": true, "help": true}
+
+// RedactCommandPayload returns a copy of the slash command payload that is safe to log.
+// The verification token and the response URL are credentials.
+func RedactCommandPayload(params url.Values) url.Values {
+	res := make(url.Values, len(params))
+	for k, v := range params {
+		res[k] = append([]string(nil), v...)
+	}
+	for _, k := range []string{"token", "response_url"} {
+		if res.Has(k) {
+			res.Set(k, Redacted)
+		}
+	}
+	if res.Has("text") {
+		text := ""
+		fields := strings.Fields(res.Get("text"))
+		if len(fields) > 0 {
+			if commandSubcommands[strings.ToLower(fields[0])] {
+				text = fields[0]
+				if len(fields) > 1 {
+					text += " " + Redacted
+				}
+			} else {
+				text = Redacted
+			}
+		}
+		res.Set("text", text)
+	}
+	return res
+}
+
 // CommandHandler handles the /whoisout Slack command requests
 func CommandHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -77,8 +113,7 @@ func CommandHandler(w http.ResponseWriter, r *http.Request) {
 
 	params, err := url.ParseQuery(string(payload))
 	if err == nil {
-		params.Set("token", "****")
-		log.Debugf("Handling the POST %s request. Payload: %s", r.URL.Path, params.Encode())
+		log.Debugf("Handling the POST %s request. Payload: %s", r.URL.Path, RedactCommandPayload(params).Encode())
 	} else {
 		log.Debugf("Handling the POST %s request.", r.URL.Path)
 	}
