@@ -3,7 +3,9 @@ package database
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hkdf"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -188,7 +190,15 @@ func New() (db *leveldb.DB) {
 	return
 }
 
-func createKey(key []byte, keySize int) (result []byte) {
+// createKey derives the encryption key of the specified size from the cryptokey with HKDF-SHA256.
+func createKey(key []byte, keySize int) ([]byte, error) {
+	return hkdf.Key(sha256.New, key, nil, "", keySize)
+}
+
+// v0CreateKey derives the encryption key of the v0 scheme by XOR-folding the cryptokey into the key size.
+//
+// Deprecated: v0 is only used to read records saved before the versioned encryption was introduced.
+func v0CreateKey(key []byte, keySize int) (result []byte) {
 	l := len(key)
 	result = make([]byte, keySize)
 	for i, j := 0, 0; i < l; i++ {
@@ -207,7 +217,7 @@ func createKey(key []byte, keySize int) (result []byte) {
 // (AES-CFB8 with a static IV). The base64 alphabet doesn't contain "$", so the formats can't be confused.
 const (
 	versionSeparator = "$"
-	// encryptionV1 is AES-256-GCM with a random 96-bit nonce per value.
+	// encryptionV1 is AES-256-GCM with a random 96-bit nonce per value and the key derived with HKDF-SHA256.
 	encryptionV1 = "01"
 )
 
@@ -254,7 +264,11 @@ func Decrypt(data string) string {
 
 // gcm returns the AES-256-GCM cipher of the v1 encryption scheme.
 func gcm() (cipher.AEAD, error) {
-	block, err := aes.NewCipher(createKey(Cryptokey, 32))
+	key, err := createKey(Cryptokey, 32)
+	if err != nil {
+		return nil, err
+	}
+	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err
 	}
@@ -298,7 +312,7 @@ func decrypt(data string) (string, error) {
 //
 // Deprecated: v0 is only used to read records saved before the versioned encryption was introduced.
 func v0Decrypt(data string) (string, error) {
-	key := createKey(Cryptokey, 32)
+	key := v0CreateKey(Cryptokey, 32)
 	iv := Cryptokey[len(Cryptokey)-aes.BlockSize:]
 	ciphertext, err := base64.StdEncoding.DecodeString(data)
 	if err != nil {

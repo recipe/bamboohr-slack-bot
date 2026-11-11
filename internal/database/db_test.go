@@ -1,8 +1,10 @@
 package database
 
 import (
+	"bytes"
 	"crypto/aes"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"reflect"
@@ -247,7 +249,7 @@ const v0FixturePlaintext = `{"bamboohr_org":"acme","bamboohr_secret":"0123456789
 // v0Encrypt encrypts the data as Encrypt did before the versioned encryption was introduced.
 func v0Encrypt(t *testing.T, data string) string {
 	t.Helper()
-	block, err := aes.NewCipher(createKey(Cryptokey, 32))
+	block, err := aes.NewCipher(v0CreateKey(Cryptokey, 32))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +282,14 @@ func TestV0Encryption(t *testing.T) {
 	}
 }
 
+// v1Fixture was produced by Encrypt with the test Cryptokey. It must always be readable.
+const v1Fixture = "$01$/EGPcEzppS9CvjY4$bBgsmiZQJQr+c2/mH3nZGI0+JcDiaQRs38z/bHRoeyA0BFMR5widg0aCoUB61EYVUPQakbNJlDc3br7QBZrXQ8+zSqLIjLJyD494VGDaoqy8cGFdO1moy3U9I+GGowy3yssxsg=="
+
 func TestEncryptionV1(t *testing.T) {
+	if got := Decrypt(v1Fixture); got != v0FixturePlaintext {
+		t.Errorf("got %q, want %q", got, v0FixturePlaintext)
+	}
+
 	enc := Encrypt(v0FixturePlaintext)
 	parts := strings.Split(enc, "$")
 	if len(parts) != 4 || parts[0] != "" || parts[1] != "01" {
@@ -317,7 +326,6 @@ func TestEncryptionV1(t *testing.T) {
 	t.Run("another key", func(t *testing.T) {
 		orig := Cryptokey
 		t.Cleanup(func() { Cryptokey = orig })
-		// Not periodic: createKey XOR-folds the key, so a key made of two equal halves becomes all zeros.
 		Cryptokey = []byte("Kq3vT9xLm2Rz8WbN4pYc7HsJd1FgA6eU0oViQ5tXhGwE3kMnB8rZyP2lCuS7aDfJ")
 		expectPanic(t, "another key", func() { Decrypt(enc) })
 	})
@@ -348,5 +356,34 @@ func TestV0RecordsAreReadable(t *testing.T) {
 	}
 	if got := GetAppliedStatuses("TV0"); got["U1"] != s {
 		t.Errorf("got %+v, want %+v", got, s)
+	}
+}
+
+func TestCreateKey(t *testing.T) {
+	// Computed independently with RFC 5869 HKDF-SHA256 for the test Cryptokey, without a salt and info.
+	// If it changes, records encrypted with v1 can't be decrypted anymore.
+	const want = "2deaccaffc6f5754afa4d85467340199703a9ab1a7c7fd9c1cf61aa65fe4ae19"
+	key, err := createKey(Cryptokey, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hex.EncodeToString(key) != want {
+		t.Errorf("got %x, want %s", key, want)
+	}
+
+	// The test Cryptokey is made of two equal halves, which the v0 XOR-folding turns into all zeros.
+	if !bytes.Equal(v0CreateKey(Cryptokey, 32), make([]byte, 32)) {
+		t.Error("v0CreateKey must not change")
+	}
+	if bytes.Equal(key, make([]byte, 32)) {
+		t.Error("the v1 key must not be all zeros")
+	}
+
+	other, err := createKey([]byte(strings.Repeat("fedcba9876543210", 4)), 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(key, other) {
+		t.Error("different cryptokeys must produce different keys")
 	}
 }
