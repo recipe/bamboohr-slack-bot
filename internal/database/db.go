@@ -3,6 +3,7 @@ package database
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"github.com/syndtr/goleveldb/leveldb/storage"
 	"github.com/syndtr/goleveldb/leveldb/util"
 	"golang.org/x/sys/unix"
+	"strings"
 	"testing"
 	"time"
 )
@@ -124,15 +126,24 @@ func (x *cfb8) XORKeyStream(dst, src []byte) {
 	}
 }
 
-func newCFB8Encrypter(block cipher.Block, iv []byte) cipher.Stream {
-	return newCFB8(block, iv, false)
+// v0CFB8Encrypter returns the encrypting AES-CFB8 stream of the v0 encryption scheme.
+//
+// Deprecated: v0 is only used to read records saved before the versioned encryption was introduced.
+func v0CFB8Encrypter(block cipher.Block, iv []byte) cipher.Stream {
+	return v0CFB8(block, iv, false)
 }
 
-func newCFB8Decrypter(block cipher.Block, iv []byte) cipher.Stream {
-	return newCFB8(block, iv, true)
+// v0CFB8Decrypter returns the decrypting AES-CFB8 stream of the v0 encryption scheme.
+//
+// Deprecated: v0 is only used to read records saved before the versioned encryption was introduced.
+func v0CFB8Decrypter(block cipher.Block, iv []byte) cipher.Stream {
+	return v0CFB8(block, iv, true)
 }
 
-func newCFB8(block cipher.Block, iv []byte, decrypt bool) cipher.Stream {
+// v0CFB8 returns the AES-CFB8 stream of the v0 encryption scheme.
+//
+// Deprecated: v0 is only used to read records saved before the versioned encryption was introduced.
+func v0CFB8(block cipher.Block, iv []byte, decrypt bool) cipher.Stream {
 	blockSize := block.BlockSize()
 	if len(iv) != blockSize {
 		// stack trace will indicate whether it was de or encryption
@@ -191,49 +202,118 @@ func createKey(key []byte, keySize int) (result []byte) {
 	return
 }
 
+// Encrypted values have the "$<version>$<nonce>$<ciphertext>" format, where the nonce and the ciphertext
+// are base64 encoded. Values without the "$" prefix are encrypted with the deprecated v0 scheme
+// (AES-CFB8 with a static IV). The base64 alphabet doesn't contain "$", so the formats can't be confused.
+const (
+	versionSeparator = "$"
+	// encryptionV1 is AES-256-GCM with a random 96-bit nonce per value.
+	encryptionV1 = "01"
+)
+
+// Encrypt encrypts the data with the latest encryption scheme.
 func Encrypt(data string) string {
 	if data == "" {
 		return ""
 	}
-	key := createKey(Cryptokey, 32)
-	iv := Cryptokey[len(Cryptokey)-aes.BlockSize:]
-	plaintext := []byte(data)
-
-	block, err := aes.NewCipher(key)
+	aead, err := gcm()
 	if err != nil {
 		panic(err)
 	}
+	nonce := make([]byte, aead.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		panic(err)
+	}
+	ciphertext := aead.Seal(nil, nonce, []byte(data), nil)
 
-	ciphertext := make([]byte, len(plaintext))
-
-	stream := newCFB8Encrypter(block, iv)
-	stream.XORKeyStream(ciphertext, plaintext)
-	encoded := base64.StdEncoding.EncodeToString(ciphertext)
-
-	return encoded
+	return versionSeparator + encryptionV1 + versionSeparator +
+		base64.StdEncoding.EncodeToString(nonce) + versionSeparator +
+		base64.StdEncoding.EncodeToString(ciphertext)
 }
 
+// Decrypt decrypts the data encrypted with any of the supported encryption schemes.
 func Decrypt(data string) string {
 	if data == "" {
 		return ""
 	}
+	var (
+		res string
+		err error
+	)
+	if strings.HasPrefix(data, versionSeparator) {
+		res, err = decrypt(data)
+	} else {
+		res, err = v0Decrypt(data)
+	}
+	if err != nil {
+		panic(err)
+	}
+
+	return res
+}
+
+// gcm returns the AES-256-GCM cipher of the v1 encryption scheme.
+func gcm() (cipher.AEAD, error) {
+	block, err := aes.NewCipher(createKey(Cryptokey, 32))
+	if err != nil {
+		return nil, err
+	}
+
+	return cipher.NewGCM(block)
+}
+
+// decrypt decrypts the data in the "$<version>$<nonce>$<ciphertext>" format.
+func decrypt(data string) (string, error) {
+	parts := strings.Split(data, versionSeparator)
+	if len(parts) != 4 || parts[0] != "" {
+		return "", fmt.Errorf("malformed encrypted value")
+	}
+	if parts[1] != encryptionV1 {
+		return "", fmt.Errorf("unsupported encryption version %q", parts[1])
+	}
+	nonce, err := base64.StdEncoding.DecodeString(parts[2])
+	if err != nil {
+		return "", fmt.Errorf("malformed nonce: %v", err)
+	}
+	ciphertext, err := base64.StdEncoding.DecodeString(parts[3])
+	if err != nil {
+		return "", fmt.Errorf("malformed ciphertext: %v", err)
+	}
+	aead, err := gcm()
+	if err != nil {
+		return "", err
+	}
+	if len(nonce) != aead.NonceSize() {
+		return "", fmt.Errorf("invalid nonce size %d", len(nonce))
+	}
+	plaintext, err := aead.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return "", fmt.Errorf("unable to decrypt: %v", err)
+	}
+
+	return string(plaintext), nil
+}
+
+// v0Decrypt decrypts the data encrypted with the v0 scheme: AES-CFB8 with a static IV, without a version prefix.
+//
+// Deprecated: v0 is only used to read records saved before the versioned encryption was introduced.
+func v0Decrypt(data string) (string, error) {
 	key := createKey(Cryptokey, 32)
 	iv := Cryptokey[len(Cryptokey)-aes.BlockSize:]
 	ciphertext, err := base64.StdEncoding.DecodeString(data)
 	if err != nil {
-		panic(err)
+		return "", err
 	}
 
 	block, err := aes.NewCipher(key)
 	if err != nil {
-		panic(err)
+		return "", err
 	}
 
-	stream := newCFB8Decrypter(block, iv)
+	stream := v0CFB8Decrypter(block, iv)
 	stream.XORKeyStream(ciphertext, ciphertext)
-	decoded := fmt.Sprintf("%s", ciphertext)
 
-	return decoded
+	return string(ciphertext), nil
 }
 
 // GetOrgs gets a list of all installed organizations with their credentials

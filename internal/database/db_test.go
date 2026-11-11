@@ -1,6 +1,8 @@
 package database
 
 import (
+	"crypto/aes"
+	"encoding/base64"
 	"encoding/json"
 	"os"
 	"reflect"
@@ -233,5 +235,118 @@ func TestPurgeExpiredInstallCallbacks(t *testing.T) {
 	}
 	if n, _ := PurgeExpiredInstallCallbacks(now.Add(time.Minute)); n != 0 {
 		t.Errorf("nothing must be left to purge, purged %d", n)
+	}
+}
+
+// v0Fixture was produced by Encrypt before the versioned encryption was introduced,
+// with the test Cryptokey. It must always be readable.
+const v0Fixture = "wzyAjs82QYxenMHnNFh+fWGh55wrdJ2GzhzjKMQpoKD504m7YRFTuP8JGYTZ3fEoY2xtbrz/Xc+1IsGcTgmZ3O2nG+b1AXHFe2K+t5s66gk5S5rH"
+
+const v0FixturePlaintext = `{"bamboohr_org":"acme","bamboohr_secret":"0123456789abcdef0123456789abcdef01234567"}`
+
+// v0Encrypt encrypts the data as Encrypt did before the versioned encryption was introduced.
+func v0Encrypt(t *testing.T, data string) string {
+	t.Helper()
+	block, err := aes.NewCipher(createKey(Cryptokey, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ciphertext := make([]byte, len(data))
+	v0CFB8Encrypter(block, Cryptokey[len(Cryptokey)-aes.BlockSize:]).XORKeyStream(ciphertext, []byte(data))
+	return base64.StdEncoding.EncodeToString(ciphertext)
+}
+
+func expectPanic(t *testing.T, name string, f func()) {
+	t.Helper()
+	defer func() {
+		if recover() == nil {
+			t.Errorf("%s: expected a panic", name)
+		}
+	}()
+	f()
+}
+
+func TestV0Encryption(t *testing.T) {
+	if got := v0Encrypt(t, v0FixturePlaintext); got != v0Fixture {
+		t.Fatalf("the v0 encryption helper doesn't match the fixture: %s", got)
+	}
+	if got := Decrypt(v0Fixture); got != v0FixturePlaintext {
+		t.Errorf("got %q, want %q", got, v0FixturePlaintext)
+	}
+	for _, s := range []string{"a", strings.Repeat("ü", 1000)} {
+		if got := Decrypt(v0Encrypt(t, s)); got != s {
+			t.Errorf("got %q, want %q", got, s)
+		}
+	}
+}
+
+func TestEncryptionV1(t *testing.T) {
+	enc := Encrypt(v0FixturePlaintext)
+	parts := strings.Split(enc, "$")
+	if len(parts) != 4 || parts[0] != "" || parts[1] != "01" {
+		t.Fatalf("unexpected format %q", enc)
+	}
+	nonce, err := base64.StdEncoding.DecodeString(parts[2])
+	if err != nil || len(nonce) != 12 {
+		t.Errorf("unexpected nonce %q: %v", parts[2], err)
+	}
+	if strings.Contains(enc, "0123456789abcdef") {
+		t.Error("the value is not encrypted")
+	}
+	if Encrypt(v0FixturePlaintext) == enc {
+		t.Error("the same value must be encrypted with a different nonce every time")
+	}
+
+	ct, _ := base64.StdEncoding.DecodeString(parts[3])
+	ct[0] ^= 1
+	tampered := "$01$" + parts[2] + "$" + base64.StdEncoding.EncodeToString(ct)
+	otherNonce := Encrypt("x")
+	for name, v := range map[string]string{
+		"tampered ciphertext": tampered,
+		"another nonce":       "$01$" + strings.Split(otherNonce, "$")[2] + "$" + parts[3],
+		"unsupported version": "$02$" + parts[2] + "$" + parts[3],
+		"missing part":        "$01$" + parts[3],
+		"extra part":          enc + "$",
+		"invalid base64":      "$01$!!!$" + parts[3],
+		"short nonce":         "$01$" + base64.StdEncoding.EncodeToString([]byte("short")) + "$" + parts[3],
+		"invalid v0 value":    "not base64!",
+	} {
+		expectPanic(t, name, func() { Decrypt(v) })
+	}
+
+	t.Run("another key", func(t *testing.T) {
+		orig := Cryptokey
+		t.Cleanup(func() { Cryptokey = orig })
+		// Not periodic: createKey XOR-folds the key, so a key made of two equal halves becomes all zeros.
+		Cryptokey = []byte("Kq3vT9xLm2Rz8WbN4pYc7HsJd1FgA6eU0oViQ5tXhGwE3kMnB8rZyP2lCuS7aDfJ")
+		expectPanic(t, "another key", func() { Decrypt(enc) })
+	})
+}
+
+func TestV0RecordsAreReadable(t *testing.T) {
+	// A record saved by the previous version.
+	s := AppliedStatus{Text: "On holiday", Emoji: ":palm_tree:", Expiration: 1}
+	b, _ := json.Marshal(s)
+	key := []byte(StatusPrefix + ":TV0:U1")
+	if err := DB.Put(key, []byte(v0Encrypt(t, string(b))), nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := GetAppliedStatuses("TV0"); got["U1"] != s {
+		t.Fatalf("got %+v, want %+v", got, s)
+	}
+
+	// Once the record is saved again, it's encrypted with the latest scheme.
+	if err := PutAppliedStatus("TV0", "U1", s); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := DB.Get(key, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(raw), "$01$") {
+		t.Errorf("unexpected format %q", raw)
+	}
+	if got := GetAppliedStatuses("TV0"); got["U1"] != s {
+		t.Errorf("got %+v, want %+v", got, s)
 	}
 }
