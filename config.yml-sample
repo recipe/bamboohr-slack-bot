@@ -6,7 +6,8 @@ cryptokey: "64 random ascii characters"
 ssl_key: ""
 ssl_cert: ""
 unknown_type_icon: ":grey_question:"
-log_level: debug
+# One of: panic, fatal, error, warn, info, debug, trace.
+log_level: info
 types:
   # Time off type list is ordered by the priority. If there are two different time-offs for the
   # same day, it will select one listed first.
