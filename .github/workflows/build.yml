@@ -48,10 +48,14 @@ jobs:
     - name: Set output
       id: vars
       run: |
-        if [[ $GITHUB_REF = "refs/tags/*" ]]; then
-          export RELEASE_VERSION="${GITHUB_REF#refs/*/}"
+        # The package version:
+        # - pushing a tag (e.g. 1.1.0) builds the release with exactly that version;
+        # - any other push builds a development version from `git describe --tags`:
+        #   1.0.0-15-gabc1234 means 15 commits after the tag 1.0.0, at the commit abc1234.
+        if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+          RELEASE_VERSION="${GITHUB_REF_NAME}"
         else
-          export RELEASE_VERSION="$(git describe --tags `git rev-list --tags --max-count=1`)"
+          RELEASE_VERSION="$(git describe --tags)"
         fi
         echo "release_version=${RELEASE_VERSION}" >> $GITHUB_OUTPUT
         echo "bot_version=${BOT}_${RELEASE_VERSION}" >> $GITHUB_OUTPUT
@@ -88,21 +92,11 @@ jobs:
     - name: Build a debian package for linux
       if: matrix.goos == 'linux'
       run: |
-        export PKG="release/debian/${BOT}"
-        mkdir -p "${PKG}/opt/${BOT}/bin"
-        cp -v "bin/${BOT}" "${PKG}/opt/${BOT}/bin"
-        mkdir -p "${PKG}/etc/${BOT}"
-        cp -v config.yml-sample "${PKG}/etc/${BOT}"
-        mkdir -p "${PKG}/usr/share/doc/${BOT}"
-        cp -v third_party/satisfy/LICENSE.txt "${PKG}/usr/share/doc/${BOT}/LICENSE-satisfy.txt"
-        sed -i "s/Version:.*/Version: ${{ steps.vars.outputs.release_version }}/" "${PKG}/DEBIAN/control"
-        sed -i "s/Architecture:.*/Architecture: ${GOARCH}/" "${PKG}/DEBIAN/control"
-        chmod -v u+x "${PKG}/opt/${BOT}/bin/${BOT}" "${PKG}/DEBIAN/postinst" "${PKG}/DEBIAN/postrm"
-        mv -v "${PKG}" "${PKG}_${{ steps.vars.outputs.release_version }}-1"
-        pushd release || exit 1
-        dpkg-deb -v --build "debian/${BOT}_${{ steps.vars.outputs.release_version }}-1"
-        popd || exit 1
-        mv -v "${PKG}_${{ steps.vars.outputs.release_version }}-1.deb" release
+        # The same script as `make deb`: files are owned by root in the package.
+        release/build-deb.sh "${{ steps.vars.outputs.release_version }}" "${GOARCH}"
+        # The released file keeps its name, install scripts refer to it.
+        mv -v "bin/${BOT}_${{ steps.vars.outputs.release_version }}-1_${GOARCH}.deb" \
+          "release/${BOT}_${{ steps.vars.outputs.release_version }}-1.deb"
 
     - name: Clean up
       run: |
