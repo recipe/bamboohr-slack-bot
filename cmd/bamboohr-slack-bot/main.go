@@ -74,6 +74,12 @@ func main() {
 
 	go func() {
 		for {
+			// Install callbacks contain BambooHR secrets, they must not outlive the installation.
+			if n, err := database.PurgeExpiredInstallCallbacks(time.Now()); err != nil {
+				log.Errorf("Unable to purge expired install callbacks: %v", err)
+			} else if n > 0 {
+				log.Infof("Purged %d expired install callback(s).", n)
+			}
 			err := Run()
 			<-time.After(PollingIntervalMin * time.Minute)
 			if err != nil {

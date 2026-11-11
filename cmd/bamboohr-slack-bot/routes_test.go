@@ -89,8 +89,16 @@ func TestFinishInstall(t *testing.T) {
 
 		FinishInstall("s1", "T1", "U1")
 
-		if len(*calls) != 1 || (*calls)[0] != (processCall{cb, "T1", "U1", false}) {
-			t.Errorf("got %+v", *calls)
+		if len(*calls) != 1 {
+			t.Fatalf("got %+v", *calls)
+		}
+		got := (*calls)[0]
+		if got.cb.ExpiresAt <= time.Now().Unix() {
+			t.Errorf("unexpected expiration %d", got.cb.ExpiresAt)
+		}
+		got.cb.ExpiresAt = 0
+		if got != (processCall{cb, "T1", "U1", false}) {
+			t.Errorf("got %+v", got)
 		}
 		if len(resp.messages) != 0 {
 			t.Errorf("unexpected messages %v", resp.messages)
@@ -134,6 +142,19 @@ func TestFinishInstall(t *testing.T) {
 			t.Errorf("the installation must not be processed: %+v", *calls)
 		}
 		expectDeleted(t, "s3")
+	})
+
+	t.Run("an expired callback is not processed", func(t *testing.T) {
+		calls := stubProcessInstall(t)
+		resp := newResponseURL(t)
+		putExpiredCallback(t, "s4", database.InstallCallback{SlackTeamID: "T1", SlackUserID: "U1", ResponseURL: resp.URL})
+
+		FinishInstall("s4", "T1", "U1")
+
+		if len(*calls) != 0 {
+			t.Errorf("the installation must not be processed: %+v", *calls)
+		}
+		expectDeleted(t, "s4")
 	})
 
 	t.Run("no callback", func(t *testing.T) {
@@ -249,9 +270,24 @@ func TestInstallCommandRequestsPermissionsWithRandomState(t *testing.T) {
 		if err != nil {
 			t.Fatalf("no install callback for the state %q: %v", s, err)
 		}
+		got.ExpiresAt = 0
 		if *got != cb {
 			t.Errorf("got %+v, want %+v", *got, cb)
 		}
 		_ = database.DeleteInstallCallback(s)
+	}
+}
+
+// putExpiredCallback stores an install callback which expired a second ago.
+// PutInstallCallback always sets a future expiration, so the record is written directly.
+func putExpiredCallback(t *testing.T, state string, cb database.InstallCallback) {
+	t.Helper()
+	cb.ExpiresAt = time.Now().Unix() - 1
+	b, err := json.Marshal(cb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.DB.Put([]byte(database.CallbackPrefix+":"+state), []byte(database.Encrypt(string(b))), nil); err != nil {
+		t.Fatal(err)
 	}
 }

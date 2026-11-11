@@ -5,6 +5,7 @@ import (
 	"crypto/cipher"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/recipe/bamboohr-slack-bot/internal/bamboohr"
 	log "github.com/sirupsen/logrus"
@@ -14,6 +15,7 @@ import (
 	"github.com/syndtr/goleveldb/leveldb/util"
 	"golang.org/x/sys/unix"
 	"testing"
+	"time"
 )
 
 const (
@@ -45,7 +47,15 @@ type InstallCallback struct {
 	ResponseURL    string `json:"response_url"`
 	BambooHROrg    string `json:"bamboohr_org"`
 	BambooHRSecret string `json:"bamboohr_secret"`
+	// Unix time after which the callback can't be used. It's set when the callback is saved.
+	ExpiresAt int64 `json:"expires_at"`
 }
+
+// InstallCallbackTTL is how long the user has to authorize the app to finish the installation.
+const InstallCallbackTTL = 10 * time.Minute
+
+// ErrInstallCallbackExpired is returned for an install callback that has expired.
+var ErrInstallCallbackExpired = errors.New("the install callback has expired")
 
 // TimeOffType struct is used as the config definition
 type TimeOffType struct {
@@ -384,32 +394,86 @@ func GetOrgDepartments(slackTeamID string) (*DepartmentCache, bool) {
 }
 
 // PutInstallCallback saves an installation callback meta information to process with the further callback.
-func PutInstallCallback(triggerID string, data InstallCallback) error {
+// The callback expires in InstallCallbackTTL.
+func PutInstallCallback(state string, data InstallCallback) error {
+	data.ExpiresAt = time.Now().Add(InstallCallbackTTL).Unix()
 	jsonString, err := json.Marshal(data)
 	if err != nil {
 		log.Errorf("Could not encode to a JSON string while saving an install callback: %v", err)
 
 		return err
 	}
-	err = DB.Put([]byte(CallbackPrefix+":"+triggerID), []byte(Encrypt(string(jsonString))), nil)
+	err = DB.Put([]byte(CallbackPrefix+":"+state), []byte(Encrypt(string(jsonString))), nil)
 
 	return err
 }
 
-// GetInstallCallback gets an installation callback meta information.
-func GetInstallCallback(triggerID string) (*InstallCallback, error) {
-	b, err := DB.Get([]byte(CallbackPrefix+":"+triggerID), nil)
-	if err != nil {
-		return nil, err
-	}
-	result := &InstallCallback{}
-	if err = json.Unmarshal([]byte(Decrypt(string(b))), result); err != nil {
-		log.Errorf("Could not decode a JSON while reading an install callback: %v", err)
-
+// decodeInstallCallback decrypts and decodes a stored install callback.
+func decodeInstallCallback(data []byte) (result *InstallCallback, err error) {
+	defer func() {
+		// Decrypt panics on a corrupted record.
+		if r := recover(); r != nil {
+			result, err = nil, fmt.Errorf("unable to decrypt: %v", r)
+		}
+	}()
+	result = &InstallCallback{}
+	if err = json.Unmarshal([]byte(Decrypt(string(data))), result); err != nil {
 		return nil, err
 	}
 
 	return result, nil
+}
+
+// expired tells whether the callback can't be used anymore.
+// Callbacks saved before the expiration was introduced don't have it and are considered expired.
+func (cb *InstallCallback) expired(now time.Time) bool {
+	return cb.ExpiresAt <= now.Unix()
+}
+
+// GetInstallCallback gets an installation callback meta information.
+// An expired callback is removed and ErrInstallCallbackExpired is returned.
+func GetInstallCallback(state string) (*InstallCallback, error) {
+	b, err := DB.Get([]byte(CallbackPrefix+":"+state), nil)
+	if err != nil {
+		return nil, err
+	}
+	result, err := decodeInstallCallback(b)
+	if err != nil {
+		log.Errorf("Could not decode a JSON while reading an install callback: %v", err)
+
+		return nil, err
+	}
+	if result.expired(time.Now()) {
+		if err := DeleteInstallCallback(state); err != nil {
+			log.Errorf("Could not remove an expired install callback: %v", err)
+		}
+
+		return nil, ErrInstallCallbackExpired
+	}
+
+	return result, nil
+}
+
+// PurgeExpiredInstallCallbacks removes install callbacks that have expired by the specified time,
+// as well as the ones that can't be decoded. It returns the number of removed callbacks.
+func PurgeExpiredInstallCallbacks(now time.Time) (int, error) {
+	iter := DB.NewIterator(util.BytesPrefix([]byte(CallbackPrefix+":")), nil)
+	defer iter.Release()
+	batch := new(leveldb.Batch)
+	for iter.Next() {
+		cb, err := decodeInstallCallback(iter.Value())
+		if err != nil || cb.expired(now) {
+			batch.Delete(append([]byte(nil), iter.Key()...))
+		}
+	}
+	if err := iter.Error(); err != nil {
+		return 0, err
+	}
+	if batch.Len() == 0 {
+		return 0, nil
+	}
+
+	return batch.Len(), DB.Write(batch, nil)
 }
 
 // DeleteInstallCallback removes an installation callback meta information.
