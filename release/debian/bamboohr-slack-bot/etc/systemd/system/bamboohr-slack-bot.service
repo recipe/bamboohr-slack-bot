@@ -5,11 +5,50 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
+# Its own system user, created by the package postinst. It reads the config through its group
+# (/etc/bamboohr-slack-bot is root:bamboohr-slack-bot, 0750/0640) and owns only the database.
+User=bamboohr-slack-bot
+Group=bamboohr-slack-bot
 WorkingDirectory=/opt/bamboohr-slack-bot
 ExecStart=/opt/bamboohr-slack-bot/bin/bamboohr-slack-bot
-StandardOutput=syslog
-StandardError=syslog
+# stdout/stderr go to the journal, which forwards them to rsyslog as `bamboohr-slack-bot`
+# (/etc/rsyslog.d/bamboohr-slack-bot.conf writes them to /var/log/bamboohr-slack-bot.log).
 SyslogIdentifier=bamboohr-slack-bot
+
+# Sandbox. The whole file system is read-only except the database.
+ProtectSystem=strict
+ReadWritePaths=/opt/bamboohr-slack-bot/db
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+# other processes' /proc entries (their environment, command lines) are hidden
+ProtectProc=invisible
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+NoNewPrivileges=true
+# No capabilities: the server listens on an unprivileged port, normally the loopback behind nginx.
+# To listen on a port below 1024 directly, add a drop-in (systemctl edit bamboohr-slack-bot):
+#   [Service]
+#   CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+#   AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RemoveIPC=true
+# IPv4/IPv6 for listening and for the Slack and BambooHR APIs; Unix sockets for syslog
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+UMask=0077
 
 [Install]
 WantedBy=multi-user.target

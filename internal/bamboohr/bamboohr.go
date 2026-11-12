@@ -180,7 +180,7 @@ type RequestContext struct {
 
 func New(org string, token string) *Client {
 	s := &Client{
-		org:        token,
+		org:        org,
 		token:      token,
 		endpoint:   fmt.Sprintf(APIURL, org),
 		httpclient: &http.Client{Timeout: 10 * time.Second},
@@ -308,4 +308,47 @@ func (api *Client) GetDepartments() (map[int]string, error) {
 	}
 
 	return res, nil
+}
+
+// WhosOutEntry is a single entry of the "who's out" response. It is either an employee time off or a company holiday.
+type WhosOutEntry struct {
+	ID    int    `json:"id"`
+	Type  string `json:"type"`
+	Name  string `json:"name"`
+	Start string `json:"start"`
+	End   string `json:"end"`
+}
+
+// GetHolidays returns the set of company holiday dates ("YYYY-MM-DD") within the specified period.
+func (api *Client) GetHolidays(startDate string, endDate string) (map[string]bool, error) {
+	ctx := RequestContext{
+		method:   "GET",
+		endpoint: "/v1/time_off/whos_out/",
+		query: url.Values{
+			"start": {startDate},
+			"end":   {endDate},
+		},
+	}
+	var list []WhosOutEntry
+	if err := api.request(ctx, &list); err != nil {
+		return nil, err
+	}
+	result := make(map[string]bool)
+	for _, e := range list {
+		if e.Type != "holiday" {
+			continue
+		}
+		start, err := time.Parse("2006-01-02", e.Start)
+		if err != nil {
+			continue
+		}
+		end, err := time.Parse("2006-01-02", e.End)
+		if err != nil {
+			end = start
+		}
+		for d := start; !d.After(end); d = d.AddDate(0, 0, 1) {
+			result[d.Format("2006-01-02")] = true
+		}
+	}
+	return result, nil
 }

@@ -3,14 +3,23 @@ package database
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hkdf"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/recipe/bamboohr-slack-bot/internal/bamboohr"
 	log "github.com/sirupsen/logrus"
 	"github.com/slack-go/slack"
 	"github.com/syndtr/goleveldb/leveldb"
+	"github.com/syndtr/goleveldb/leveldb/storage"
+	"github.com/syndtr/goleveldb/leveldb/util"
 	"golang.org/x/sys/unix"
+	"strings"
+	"testing"
+	"time"
 )
 
 const (
@@ -19,10 +28,30 @@ const (
 	WhoIsOutPrefix    = "WIO"
 	CallbackPrefix    = "CALLBACK"
 	DepartmentsPrefix = "DEPARTMENTS"
+	StatusPrefix      = "STATUS"
 )
 
 var DB = New()
 var Cryptokey []byte
+
+// MinCryptokeyLength is the minimum length of the cryptokey.
+const MinCryptokeyLength = 32
+
+// SampleCryptokey is the placeholder value of the cryptokey in the config.yml-sample.
+const SampleCryptokey = "64 random ascii characters"
+
+// ValidateCryptokey checks that the cryptokey is not too weak to protect the stored secrets.
+func ValidateCryptokey(key string) error {
+	const hint = " Generate a new one with `openssl rand -base64 48`."
+	if key == SampleCryptokey {
+		return fmt.Errorf("the cryptokey is the sample placeholder value." + hint)
+	}
+	if len(key) < MinCryptokeyLength {
+		return fmt.Errorf("the cryptokey must be at least %d characters long."+hint, MinCryptokeyLength)
+	}
+
+	return nil
+}
 
 type OrganizationCredentials struct {
 	SlackTeamID      string     `json:"-"`
@@ -35,10 +64,21 @@ type OrganizationCredentials struct {
 type SlackToken slack.OAuthResponse
 
 type InstallCallback struct {
+	// The workspace and the user who ran the install command. Only they can finish the installation.
+	SlackTeamID    string `json:"slack_team_id"`
+	SlackUserID    string `json:"slack_user_id"`
 	ResponseURL    string `json:"response_url"`
 	BambooHROrg    string `json:"bamboohr_org"`
 	BambooHRSecret string `json:"bamboohr_secret"`
+	// Unix time after which the callback can't be used. It's set when the callback is saved.
+	ExpiresAt int64 `json:"expires_at"`
 }
+
+// InstallCallbackTTL is how long the user has to authorize the app to finish the installation.
+const InstallCallbackTTL = 10 * time.Minute
+
+// ErrInstallCallbackExpired is returned for an install callback that has expired.
+var ErrInstallCallbackExpired = errors.New("the install callback has expired")
 
 // TimeOffType struct is used as the config definition
 type TimeOffType struct {
@@ -76,6 +116,14 @@ type DepartmentCache struct {
 	ExpiresAt   int64          `json:"expiresAt"`
 }
 
+// AppliedStatus is a Slack profile status that has been set by the bot.
+// It is used to detect statuses that must be cleared when a time off is withdrawn.
+type AppliedStatus struct {
+	Text       string `json:"text"`
+	Emoji      string `json:"emoji"`
+	Expiration int64  `json:"expiration"`
+}
+
 type cfb8 struct {
 	b         cipher.Block
 	blockSize int
@@ -99,15 +147,24 @@ func (x *cfb8) XORKeyStream(dst, src []byte) {
 	}
 }
 
-func newCFB8Encrypter(block cipher.Block, iv []byte) cipher.Stream {
-	return newCFB8(block, iv, false)
+// v0CFB8Encrypter returns the encrypting AES-CFB8 stream of the v0 encryption scheme.
+//
+// Deprecated: v0 is only used to read records saved before the versioned encryption was introduced.
+func v0CFB8Encrypter(block cipher.Block, iv []byte) cipher.Stream {
+	return v0CFB8(block, iv, false)
 }
 
-func newCFB8Decrypter(block cipher.Block, iv []byte) cipher.Stream {
-	return newCFB8(block, iv, true)
+// v0CFB8Decrypter returns the decrypting AES-CFB8 stream of the v0 encryption scheme.
+//
+// Deprecated: v0 is only used to read records saved before the versioned encryption was introduced.
+func v0CFB8Decrypter(block cipher.Block, iv []byte) cipher.Stream {
+	return v0CFB8(block, iv, true)
 }
 
-func newCFB8(block cipher.Block, iv []byte, decrypt bool) cipher.Stream {
+// v0CFB8 returns the AES-CFB8 stream of the v0 encryption scheme.
+//
+// Deprecated: v0 is only used to read records saved before the versioned encryption was introduced.
+func v0CFB8(block cipher.Block, iv []byte, decrypt bool) cipher.Stream {
 	blockSize := block.BlockSize()
 	if len(iv) != blockSize {
 		// stack trace will indicate whether it was de or encryption
@@ -126,6 +183,15 @@ func newCFB8(block cipher.Block, iv []byte, decrypt bool) cipher.Stream {
 }
 
 func New() (db *leveldb.DB) {
+	if testing.Testing() {
+		// Tests must never touch the real database.
+		db, err := leveldb.Open(storage.NewMemStorage(), nil)
+		if err != nil {
+			log.Fatalf("Unable to open the in-memory database: %v", err)
+		}
+
+		return db
+	}
 	var path string
 	for _, p := range [2]string{"/opt/bamboohr-slack-bot/db", "."} {
 		if unix.Access(p, unix.W_OK) == nil {
@@ -143,7 +209,15 @@ func New() (db *leveldb.DB) {
 	return
 }
 
-func createKey(key []byte, keySize int) (result []byte) {
+// createKey derives the encryption key of the specified size from the cryptokey with HKDF-SHA256.
+func createKey(key []byte, keySize int) ([]byte, error) {
+	return hkdf.Key(sha256.New, key, nil, "", keySize)
+}
+
+// v0CreateKey derives the encryption key of the v0 scheme by XOR-folding the cryptokey into the key size.
+//
+// Deprecated: v0 is only used to read records saved before the versioned encryption was introduced.
+func v0CreateKey(key []byte, keySize int) (result []byte) {
 	l := len(key)
 	result = make([]byte, keySize)
 	for i, j := 0, 0; i < l; i++ {
@@ -157,49 +231,123 @@ func createKey(key []byte, keySize int) (result []byte) {
 	return
 }
 
+// Encrypted values have the "$<version>$<nonce>$<ciphertext>" format, where the nonce and the ciphertext
+// are base64 encoded. Values without the "$" prefix are encrypted with the deprecated v0 scheme
+// (AES-CFB8 with a static IV). The base64 alphabet doesn't contain "$", so the formats can't be confused.
+const (
+	versionSeparator = "$"
+	// encryptionV1 is AES-256-GCM with a random 96-bit nonce per value and the key derived with HKDF-SHA256.
+	encryptionV1 = "01"
+)
+
+// Encrypt encrypts the data with the latest encryption scheme.
 func Encrypt(data string) string {
 	if data == "" {
 		return ""
 	}
-	key := createKey(Cryptokey, 32)
-	iv := Cryptokey[len(Cryptokey)-aes.BlockSize:]
-	plaintext := []byte(data)
-
-	block, err := aes.NewCipher(key)
+	aead, err := gcm()
 	if err != nil {
 		panic(err)
 	}
+	nonce := make([]byte, aead.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		panic(err)
+	}
+	ciphertext := aead.Seal(nil, nonce, []byte(data), nil)
 
-	ciphertext := make([]byte, len(plaintext))
-
-	stream := newCFB8Encrypter(block, iv)
-	stream.XORKeyStream(ciphertext, plaintext)
-	encoded := base64.StdEncoding.EncodeToString(ciphertext)
-
-	return encoded
+	return versionSeparator + encryptionV1 + versionSeparator +
+		base64.StdEncoding.EncodeToString(nonce) + versionSeparator +
+		base64.StdEncoding.EncodeToString(ciphertext)
 }
 
-func Decrypt(data string) string {
+// Decrypt decrypts the data encrypted with any of the supported encryption schemes.
+func Decrypt(data string) (string, error) {
 	if data == "" {
-		return ""
+		return "", nil
 	}
-	key := createKey(Cryptokey, 32)
+	if strings.HasPrefix(data, versionSeparator) {
+		return decrypt(data)
+	}
+
+	return v0Decrypt(data)
+}
+
+// decodeRecord decrypts a stored record and decodes its JSON into v.
+func decodeRecord(data []byte, v any) error {
+	plaintext, err := Decrypt(string(data))
+	if err != nil {
+		return err
+	}
+
+	return json.Unmarshal([]byte(plaintext), v)
+}
+
+// gcm returns the AES-256-GCM cipher of the v1 encryption scheme.
+func gcm() (cipher.AEAD, error) {
+	key, err := createKey(Cryptokey, 32)
+	if err != nil {
+		return nil, err
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+
+	return cipher.NewGCM(block)
+}
+
+// decrypt decrypts the data in the "$<version>$<nonce>$<ciphertext>" format.
+func decrypt(data string) (string, error) {
+	parts := strings.Split(data, versionSeparator)
+	if len(parts) != 4 || parts[0] != "" {
+		return "", fmt.Errorf("malformed encrypted value")
+	}
+	if parts[1] != encryptionV1 {
+		return "", fmt.Errorf("unsupported encryption version %q", parts[1])
+	}
+	nonce, err := base64.StdEncoding.DecodeString(parts[2])
+	if err != nil {
+		return "", fmt.Errorf("malformed nonce: %v", err)
+	}
+	ciphertext, err := base64.StdEncoding.DecodeString(parts[3])
+	if err != nil {
+		return "", fmt.Errorf("malformed ciphertext: %v", err)
+	}
+	aead, err := gcm()
+	if err != nil {
+		return "", err
+	}
+	if len(nonce) != aead.NonceSize() {
+		return "", fmt.Errorf("invalid nonce size %d", len(nonce))
+	}
+	plaintext, err := aead.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return "", fmt.Errorf("unable to decrypt: %v", err)
+	}
+
+	return string(plaintext), nil
+}
+
+// v0Decrypt decrypts the data encrypted with the v0 scheme: AES-CFB8 with a static IV, without a version prefix.
+//
+// Deprecated: v0 is only used to read records saved before the versioned encryption was introduced.
+func v0Decrypt(data string) (string, error) {
+	key := v0CreateKey(Cryptokey, 32)
 	iv := Cryptokey[len(Cryptokey)-aes.BlockSize:]
 	ciphertext, err := base64.StdEncoding.DecodeString(data)
 	if err != nil {
-		panic(err)
+		return "", err
 	}
 
 	block, err := aes.NewCipher(key)
 	if err != nil {
-		panic(err)
+		return "", err
 	}
 
-	stream := newCFB8Decrypter(block, iv)
+	stream := v0CFB8Decrypter(block, iv)
 	stream.XORKeyStream(ciphertext, ciphertext)
-	decoded := fmt.Sprintf("%s", ciphertext)
 
-	return decoded
+	return string(ciphertext), nil
 }
 
 // GetOrgs gets a list of all installed organizations with their credentials
@@ -213,8 +361,11 @@ func GetOrgs() []OrganizationCredentials {
 		}
 		slackTeamID := string(key)[len(TeamPrefix)+1:]
 		var credentials OrganizationCredentials
-		if err := json.Unmarshal([]byte(Decrypt(string(iter.Value()))), &credentials); err != nil {
-			log.Fatalf("Could not decode a JSON while retrieving an organization credentials: %v", err)
+		if err := decodeRecord(iter.Value(), &credentials); err != nil {
+			// One corrupted record must not stop the other organizations.
+			log.Errorf("Could not decode the credentials of the organization %s: %v", slackTeamID, err)
+
+			continue
 		}
 
 		credentials.SlackTeamID = slackTeamID
@@ -245,7 +396,7 @@ func GetOrg(slackTeamID string) (OrganizationCredentials, bool) {
 		return res, false
 	}
 
-	if err := json.Unmarshal([]byte(Decrypt(string(data))), &res); err != nil {
+	if err := decodeRecord(data, &res); err != nil {
 		log.Errorf("Could not decode a JSON while retrieving an organization: %v", err)
 
 		return res, false
@@ -273,8 +424,10 @@ func GetSlackUserToken(slackTeamID string, slackUserID string) (SlackToken, bool
 		return token, false
 	}
 
-	if err := json.Unmarshal([]byte(Decrypt(string(data))), &token); err != nil {
-		log.Fatalf("Could not decode a JSON while retrieving a user token: %v", err)
+	if err := decodeRecord(data, &token); err != nil {
+		log.Errorf("Could not decode a user token: %v", err)
+
+		return token, false
 	}
 
 	return token, true
@@ -301,7 +454,7 @@ func GetWIOMessage(slackTeamID string) ([]WhoIsOutMessage, error) {
 	if err != nil {
 		return res, err
 	}
-	if err := json.Unmarshal([]byte(Decrypt(string(data))), &res); err != nil {
+	if err := decodeRecord(data, &res); err != nil {
 		log.Errorf("Could not decode a JSON while retrieving a who-is-out message: %v", err)
 
 		return res, err
@@ -350,7 +503,7 @@ func GetOrgDepartments(slackTeamID string) (*DepartmentCache, bool) {
 	if len(data) == 0 {
 		return res, false
 	}
-	if err := json.Unmarshal([]byte(Decrypt(string(data))), res); err != nil {
+	if err := decodeRecord(data, res); err != nil {
 		log.Errorf("Could not decode a JSON while retrieving departments: %v", err)
 
 		return nil, false
@@ -360,32 +513,80 @@ func GetOrgDepartments(slackTeamID string) (*DepartmentCache, bool) {
 }
 
 // PutInstallCallback saves an installation callback meta information to process with the further callback.
-func PutInstallCallback(triggerID string, data InstallCallback) error {
+// The callback expires in InstallCallbackTTL.
+func PutInstallCallback(state string, data InstallCallback) error {
+	data.ExpiresAt = time.Now().Add(InstallCallbackTTL).Unix()
 	jsonString, err := json.Marshal(data)
 	if err != nil {
 		log.Errorf("Could not encode to a JSON string while saving an install callback: %v", err)
 
 		return err
 	}
-	err = DB.Put([]byte(CallbackPrefix+":"+triggerID), []byte(Encrypt(string(jsonString))), nil)
+	err = DB.Put([]byte(CallbackPrefix+":"+state), []byte(Encrypt(string(jsonString))), nil)
 
 	return err
 }
 
-// GetInstallCallback gets an installation callback meta information.
-func GetInstallCallback(triggerID string) (*InstallCallback, error) {
-	b, err := DB.Get([]byte(CallbackPrefix+":"+triggerID), nil)
-	if err != nil {
-		return nil, err
-	}
+// decodeInstallCallback decrypts and decodes a stored install callback.
+func decodeInstallCallback(data []byte) (*InstallCallback, error) {
 	result := &InstallCallback{}
-	if err = json.Unmarshal(b, result); err != nil {
-		log.Errorf("Could not dencode to a JSON while reading an install callback: %v", err)
-
+	if err := decodeRecord(data, result); err != nil {
 		return nil, err
 	}
 
 	return result, nil
+}
+
+// expired tells whether the callback can't be used anymore.
+// Callbacks saved before the expiration was introduced don't have it and are considered expired.
+func (cb *InstallCallback) expired(now time.Time) bool {
+	return cb.ExpiresAt <= now.Unix()
+}
+
+// GetInstallCallback gets an installation callback meta information.
+// An expired callback is removed and ErrInstallCallbackExpired is returned.
+func GetInstallCallback(state string) (*InstallCallback, error) {
+	b, err := DB.Get([]byte(CallbackPrefix+":"+state), nil)
+	if err != nil {
+		return nil, err
+	}
+	result, err := decodeInstallCallback(b)
+	if err != nil {
+		log.Errorf("Could not decode a JSON while reading an install callback: %v", err)
+
+		return nil, err
+	}
+	if result.expired(time.Now()) {
+		if err := DeleteInstallCallback(state); err != nil {
+			log.Errorf("Could not remove an expired install callback: %v", err)
+		}
+
+		return nil, ErrInstallCallbackExpired
+	}
+
+	return result, nil
+}
+
+// PurgeExpiredInstallCallbacks removes install callbacks that have expired by the specified time,
+// as well as the ones that can't be decoded. It returns the number of removed callbacks.
+func PurgeExpiredInstallCallbacks(now time.Time) (int, error) {
+	iter := DB.NewIterator(util.BytesPrefix([]byte(CallbackPrefix+":")), nil)
+	defer iter.Release()
+	batch := new(leveldb.Batch)
+	for iter.Next() {
+		cb, err := decodeInstallCallback(iter.Value())
+		if err != nil || cb.expired(now) {
+			batch.Delete(append([]byte(nil), iter.Key()...))
+		}
+	}
+	if err := iter.Error(); err != nil {
+		return 0, err
+	}
+	if batch.Len() == 0 {
+		return 0, nil
+	}
+
+	return batch.Len(), DB.Write(batch, nil)
 }
 
 // DeleteInstallCallback removes an installation callback meta information.
@@ -393,4 +594,39 @@ func DeleteInstallCallback(triggerID string) (err error) {
 	err = DB.Delete([]byte(CallbackPrefix+":"+triggerID), nil)
 
 	return
+}
+
+// GetAppliedStatuses returns statuses set by the bot in the specific Slack workspace, keyed by the Slack user ID.
+func GetAppliedStatuses(slackTeamID string) map[string]AppliedStatus {
+	res := make(map[string]AppliedStatus)
+	prefix := StatusPrefix + ":" + slackTeamID + ":"
+	iter := DB.NewIterator(util.BytesPrefix([]byte(prefix)), nil)
+	defer iter.Release()
+	for iter.Next() {
+		userID := string(iter.Key())[len(prefix):]
+		var s AppliedStatus
+		if err := decodeRecord(iter.Value(), &s); err != nil {
+			log.Errorf("Could not decode a JSON while retrieving an applied status: %v", err)
+
+			continue
+		}
+		res[userID] = s
+	}
+
+	return res
+}
+
+// PutAppliedStatus saves the status that has been set by the bot for the specific user.
+func PutAppliedStatus(slackTeamID string, slackUserID string, s AppliedStatus) error {
+	b, err := json.Marshal(s)
+	if err != nil {
+		return err
+	}
+
+	return DB.Put([]byte(StatusPrefix+":"+slackTeamID+":"+slackUserID), []byte(Encrypt(string(b))), nil)
+}
+
+// DeleteAppliedStatus forgets the status that has been set by the bot for the specific user.
+func DeleteAppliedStatus(slackTeamID string, slackUserID string) error {
+	return DB.Delete([]byte(StatusPrefix+":"+slackTeamID+":"+slackUserID), nil)
 }

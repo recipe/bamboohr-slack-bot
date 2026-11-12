@@ -2,8 +2,32 @@ name: build
 
 on: push
 
+# Third-party actions are pinned to commit SHAs (the version is in the comment), so a moved or
+# compromised tag can't change what runs with the repository token.
 jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+    - name: Set up Go
+      uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+      with:
+        go-version-file: go.mod
+
+    - name: Check formatting
+      run: make fmt
+
+    - name: Vet
+      run: make vet
+
+    - name: Test
+      run: go test -race -count=1 -v ./...
+
   build:
+    needs: test
     strategy:
       matrix:
         goos: [linux, darwin]
@@ -17,17 +41,21 @@ jobs:
 
     steps:
     - name: Checkout
-      uses: actions/checkout@v4
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       with:
         fetch-depth: 0
 
     - name: Set output
       id: vars
       run: |
-        if [[ $GITHUB_REF = "refs/tags/*" ]]; then
-          export RELEASE_VERSION="${GITHUB_REF#refs/*/}"
+        # The package version:
+        # - pushing a tag (e.g. 1.1.0) builds the release with exactly that version;
+        # - any other push builds a development version from `git describe --tags`:
+        #   1.0.0-15-gabc1234 means 15 commits after the tag 1.0.0, at the commit abc1234.
+        if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+          RELEASE_VERSION="${GITHUB_REF_NAME}"
         else
-          export RELEASE_VERSION="$(git describe --tags `git rev-list --tags --max-count=1`)"
+          RELEASE_VERSION="$(git describe --tags)"
         fi
         echo "release_version=${RELEASE_VERSION}" >> $GITHUB_OUTPUT
         echo "bot_version=${BOT}_${RELEASE_VERSION}" >> $GITHUB_OUTPUT
@@ -44,9 +72,9 @@ jobs:
         echo ${ASSET_NAME}
 
     - name: Set up Go
-      uses: actions/setup-go@v3
+      uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
       with:
-        go-version: ^1.19
+        go-version-file: go.mod
 
     - name: Get project dependencies
       run: go mod download
@@ -58,22 +86,17 @@ jobs:
       run: |
         cp -v "bin/${BOT}" release
         cp -v config.yml-sample release
+        # The binary embeds the Satisfy font, its license goes with every distribution.
+        cp -v third_party/satisfy/LICENSE.txt release/LICENSE-satisfy.txt
 
     - name: Build a debian package for linux
       if: matrix.goos == 'linux'
       run: |
-        export PKG="release/debian/${BOT}"
-        mkdir -p "${PKG}/opt/${BOT}/bin"
-        cp -v "bin/${BOT}" "${PKG}/opt/${BOT}/bin"
-        \cp -fv config.yml-sample "${PKG}/etc/${BOT}"
-        sed -i "s/Version:.*/Version: ${{ steps.vars.outputs.release_version }}/" "${PKG}/DEBIAN/control"
-        sed -i "s/Architecture:.*/Architecture: ${GOARCH}/" "${PKG}/DEBIAN/control"
-        chmod -v u+x "${PKG}/opt/${BOT}/bin/${BOT}" "${PKG}/DEBIAN/postinst" "${PKG}/DEBIAN/postrm"
-        mv -v "${PKG}" "${PKG}_${{ steps.vars.outputs.release_version }}-1"
-        pushd release || exit 1
-        dpkg-deb -v --build "debian/${BOT}_${{ steps.vars.outputs.release_version }}-1"
-        popd || exit 1
-        mv -v "${PKG}_${{ steps.vars.outputs.release_version }}-1.deb" release
+        # The same script as `make deb`: files are owned by root in the package.
+        release/build-deb.sh "${{ steps.vars.outputs.release_version }}" "${GOARCH}"
+        # The released file keeps its name, install scripts refer to it.
+        mv -v "bin/${BOT}_${{ steps.vars.outputs.release_version }}-1_${GOARCH}.deb" \
+          "release/${BOT}_${{ steps.vars.outputs.release_version }}-1.deb"
 
     - name: Clean up
       run: |
@@ -84,7 +107,7 @@ jobs:
       run: tar -cvzf ${{ steps.vars.outputs.asset_name }}.tar.gz ${{ steps.vars.outputs.bot_version }}
 
     - name: Upload artifacts
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
       with:
         name: ${{ steps.vars.outputs.asset_name }}
         path: ${{ steps.vars.outputs.asset_name }}.tar.gz
@@ -92,7 +115,7 @@ jobs:
 
     - name: Upload binaries to release
       if: startsWith(github.ref, 'refs/tags/')
-      uses: svenstaro/upload-release-action@v2
+      uses: svenstaro/upload-release-action@29e53e917877a24fad85510ded594ab3c9ca12de # v2.11.5
       with:
         repo_token: ${{ secrets.GITHUB_TOKEN }}
         file: ${{ steps.vars.outputs.asset_name }}.tar.gz

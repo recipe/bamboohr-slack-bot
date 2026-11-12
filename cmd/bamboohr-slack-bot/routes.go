@@ -3,9 +3,12 @@ package main
 import (
 	"bytes"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -22,6 +25,75 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/slack-go/slack"
 )
+
+// Redacted replaces sensitive values in logs.
+const Redacted = "****"
+
+// commandSubcommands are the known first words of the command text. They are safe to log.
+var commandSubcommands = map[string]bool{"install": true, "in": true, "help": true}
+
+// RedactValues returns a copy of the values where the specified keys are masked. Missing keys are not added.
+func RedactValues(values url.Values, keys ...string) url.Values {
+	res := make(url.Values, len(values))
+	for k, v := range values {
+		res[k] = append([]string(nil), v...)
+	}
+	for _, k := range keys {
+		if res.Has(k) {
+			res.Set(k, Redacted)
+		}
+	}
+	return res
+}
+
+// RedactCommandPayload returns a copy of the slash command payload that is safe to log.
+// The verification token and the response URL are credentials.
+func RedactCommandPayload(params url.Values) url.Values {
+	res := RedactValues(params, "token", "response_url")
+	if res.Has("text") {
+		text := ""
+		fields := strings.Fields(res.Get("text"))
+		if len(fields) > 0 {
+			if commandSubcommands[strings.ToLower(fields[0])] {
+				text = fields[0]
+				if len(fields) > 1 {
+					text += " " + Redacted
+				}
+			} else {
+				text = Redacted
+			}
+		}
+		res.Set("text", text)
+	}
+	return res
+}
+
+// MaxCommandBodyBytes is the maximum size of a slash command request body. Slack sends a few kilobytes.
+const MaxCommandBodyBytes = 64 << 10
+
+// MaxRequestAge is the maximum difference between the X-Slack-Request-Timestamp and the server time.
+// A signed request is rejected after it, so a captured request can't be replayed later.
+const MaxRequestAge = 5 * time.Minute
+
+// VerifySlackSignature checks the X-Slack-Signature header of a request signed by Slack:
+// "v0=" followed by the hex HMAC-SHA256 of "v0:<timestamp>:<body>" with the signing secret.
+// The MACs are compared in constant time, so the response time doesn't reveal how much of a forged
+// signature is correct.
+func VerifySlackSignature(signingSecret string, timestamp string, body []byte, signature string) bool {
+	got, ok := strings.CutPrefix(signature, "v0=")
+	if !ok {
+		return false
+	}
+	gotMAC, err := hex.DecodeString(got)
+	if err != nil {
+		return false
+	}
+	h := hmac.New(sha256.New, []byte(signingSecret))
+	h.Write([]byte("v0:" + timestamp + ":"))
+	h.Write(body)
+
+	return hmac.Equal(gotMAC, h.Sum(nil))
+}
 
 // CommandHandler handles the /whoisout Slack command requests
 func CommandHandler(w http.ResponseWriter, r *http.Request) {
@@ -61,13 +133,22 @@ func CommandHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	tts := time.Unix(its, 0)
 	clockSkew := math.Abs(float64(time.Now().Unix() - tts.Unix()))
-	if clockSkew > 1000 {
-		http.Error(w, fmt.Sprintf("Clock skew: %d sec.", int(clockSkew)), http.StatusForbidden)
+	if clockSkew > MaxRequestAge.Seconds() {
+		// The offset of the server clock is only logged, it's not revealed to the caller.
+		log.Debugf("The request timestamp differs from the server time by %d sec.", int(clockSkew))
+		http.Error(w, "The request timestamp is out of range.", http.StatusForbidden)
 
 		return
 	}
 
-	payload, err := io.ReadAll(r.Body)
+	// The whole body is read before the signature can be verified, so it must be limited.
+	payload, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxCommandBodyBytes))
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		http.Error(w, "Request Entity Too Large", http.StatusRequestEntityTooLarge)
+
+		return
+	}
 	if err != nil {
 		log.Errorf("Error reading the body while handling the POST %s request: %v", r.URL.Path, err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
@@ -77,19 +158,14 @@ func CommandHandler(w http.ResponseWriter, r *http.Request) {
 
 	params, err := url.ParseQuery(string(payload))
 	if err == nil {
-		params.Set("token", "****")
-		log.Debugf("Handling the POST %s request. Payload: %s", r.URL.Path, params.Encode())
+		log.Debugf("Handling the POST %s request. Payload: %s", r.URL.Path, RedactCommandPayload(params).Encode())
 	} else {
 		log.Debugf("Handling the POST %s request.", r.URL.Path)
 	}
 
-	h := hmac.New(sha256.New, []byte(slackSigningSecret))
-	h.Write([]byte("v0:" + ts + ":"))
-	h.Write(payload)
-	sha := hex.EncodeToString(h.Sum(nil))
-	if "v0="+sha != sig {
+	if !VerifySlackSignature(slackSigningSecret, ts, payload, sig) {
 		log.Debugf("Signature does not match. Check the slack_signing_secret in the config.yml.")
-		http.Error(w, "Signature does not match (%s).", http.StatusForbidden)
+		http.Error(w, "Signature does not match.", http.StatusForbidden)
 
 		return
 	}
@@ -103,10 +179,9 @@ func CommandHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	teamID := q.Get("team_id")
 	userID := q.Get("user_id")
-	triggerID := q.Get("trigger_id")
 	responseURL := q.Get("response_url")
 	text := q.Get("text")
-	if teamID == "" || userID == "" || triggerID == "" || responseURL == "" {
+	if teamID == "" || userID == "" || responseURL == "" {
 		http.Error(w, "Invalid request.", http.StatusBadRequest)
 
 		return
@@ -138,11 +213,13 @@ func CommandHandler(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 
 			cb := database.InstallCallback{
+				SlackTeamID:    teamID,
+				SlackUserID:    userID,
 				ResponseURL:    responseURL,
 				BambooHROrg:    tokens[1],
 				BambooHRSecret: tokens[2],
 			}
-			ProcessInstallCommand(cb, triggerID, teamID, userID, true)
+			processInstall(cb, teamID, userID, true)
 
 			return
 		} else if tokens[0] == "in" && len(tokens) > 1 {
@@ -257,7 +334,12 @@ func RedirectHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.WithFields(log.Fields{"RequestURI": r.RequestURI}).Debug("Redirect request.")
+	// The OAuth code can be exchanged for a token, and the state identifies the install callback
+	// which contains the BambooHR secret.
+	log.WithFields(log.Fields{
+		"Path":  r.URL.Path,
+		"Query": RedactValues(r.URL.Query(), "code", "state").Encode(),
+	}).Debug("Redirect request.")
 
 	slackClientSecret, ok := config.String("slack_client_secret")
 	if !ok {
@@ -327,23 +409,60 @@ func RedirectHandler(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/?success=1", http.StatusSeeOther)
 
 	if state != "" {
-		go func() {
-			log.Debug("Redirect request: trying to finish the installation request.")
-			cb, err := database.GetInstallCallback(state)
-			if err != nil {
-				log.Debug("No install callback found.")
-
-				return
-			}
-			ProcessInstallCommand(*cb, state, token.TeamID, token.UserID, false)
-
-			log.Debug("Redirect request: removing the callback from the database.")
-			// Remove callback as it's only considered to be a two-step workflow
-			if err = database.DeleteInstallCallback(state); err != nil {
-				log.Errorf("Could not remove the install callback from the database: %v", err)
-			}
-		}()
+		go FinishInstall(state, token.TeamID, token.UserID)
 	}
+}
+
+// NewState generates a random, unguessable OAuth state. It identifies the install callback,
+// so it must not be derived from anything that is sent around, like the Slack trigger ID.
+func NewState() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+// processInstall processes the install command. It is replaced in tests.
+var processInstall = ProcessInstallCommand
+
+// FinishInstall finishes the installation that has been started by the install command and required
+// the user to authorize the app. The installation is finished only if the authorized user is the one
+// who ran the install command in the same workspace. The callback is removed in any case.
+func FinishInstall(state string, teamID string, userID string) {
+	log.Debug("Redirect request: trying to finish the installation request.")
+	cb, err := database.GetInstallCallback(state)
+	if err != nil {
+		log.Debug("No install callback found.")
+
+		return
+	}
+
+	defer func() {
+		log.Debug("Redirect request: removing the callback from the database.")
+		// Remove callback as it's only considered to be a two-step workflow
+		if err := database.DeleteInstallCallback(state); err != nil {
+			log.Errorf("Could not remove the install callback from the database: %v", err)
+		}
+	}()
+
+	if cb.SlackTeamID == "" || cb.SlackTeamID != teamID || cb.SlackUserID != userID {
+		log.WithFields(log.Fields{
+			"CallbackTeamID": cb.SlackTeamID,
+			"CallbackUserID": cb.SlackUserID,
+			"TeamID":         teamID,
+			"UserID":         userID,
+		}).Warn("Rejecting the install callback: the app has been authorized by another user or workspace.")
+		_ = PostToResponseURL(
+			cb.ResponseURL,
+			"The installation has not been finished: the app has been authorized by another Slack user "+
+				"or in another workspace. Please run the install command again and authorize the app yourself.",
+		)
+
+		return
+	}
+
+	processInstall(*cb, teamID, userID, false)
 }
 
 // PostToResponseURL responds back to a Slack user with the message using the callback URL provided with
@@ -398,7 +517,6 @@ func PostToResponseURL(URL string, message string) error {
 // It validates the request and all necessary permissions.
 func ProcessInstallCommand(
 	callback database.InstallCallback,
-	triggerID string,
 	teamID string,
 	userID string,
 	requestToken bool,
@@ -421,7 +539,18 @@ func ProcessInstallCommand(
 		if requestToken {
 			// Store the secret to the database to proceed later right after a redirect,
 			// as the Team ID and User ID should come with redirect request.
-			if err := database.PutInstallCallback(triggerID, callback); err != nil {
+			// The callback is identified by the random OAuth state.
+			state, err := NewState()
+			if err != nil {
+				log.Errorf("Could not generate an OAuth state: %v", err)
+				_ = PostToResponseURL(
+					callback.ResponseURL,
+					"Sorry, internal error occurred. Please try again later.",
+				)
+
+				return
+			}
+			if err := database.PutInstallCallback(state, callback); err != nil {
 				_ = PostToResponseURL(
 					callback.ResponseURL,
 					"Sorry, internal error occurred. Please try again later.",
@@ -430,7 +559,7 @@ func ProcessInstallCommand(
 				return
 			}
 			log.Debug("Responding to the install command with a request for additional permissions.")
-			// Respond with install button to request necessary permissions passing the triggerID as the "code"
+			// Respond with install button to request necessary permissions passing the state
 			_ = PostToResponseURL(
 				callback.ResponseURL,
 				`{
@@ -444,7 +573,7 @@ func ProcessInstallCommand(
                     "text": "Review Permissions",
                     "type": "button",
                     "url": "https://slack.com/oauth/authorize?client_id=`+url.QueryEscape(slackClientID)+
-					`&state=`+url.QueryEscape(triggerID)+
+					`&state=`+url.QueryEscape(state)+
 					`&scope=`+SlackScope+`"
                 }
             ]

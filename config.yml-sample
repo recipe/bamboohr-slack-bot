@@ -1,4 +1,5 @@
-server_endpoint: "localhost:443"
+# The loopback behind a reverse proxy which terminates TLS (see the README).
+server_endpoint: "127.0.0.1:8087"
 slack_client_id: ""
 slack_client_secret: ""
 slack_signing_secret: ""
@@ -6,7 +7,8 @@ cryptokey: "64 random ascii characters"
 ssl_key: ""
 ssl_cert: ""
 unknown_type_icon: ":grey_question:"
-log_level: debug
+# One of: panic, fatal, error, warn, info, debug, trace.
+log_level: info
 types:
   # Time off type list is ordered by the priority. If there are two different time-offs for the
   # same day, it will select one listed first.
