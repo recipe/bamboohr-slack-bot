@@ -100,7 +100,7 @@ jobs:
 
     - name: Clean up
       run: |
-        rm -frv release/debian
+        rm -frv release/debian release/build-deb.sh
         mv release ${{ steps.vars.outputs.bot_version }}
 
     - name: Create a ZIP archive

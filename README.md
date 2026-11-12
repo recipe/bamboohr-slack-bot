@@ -27,13 +27,14 @@ Installation
   `users:read.email`,
   `users:read`,
   `commands`.
-* Download and install the binary package for your operating system and architecture. For example, for Linux amd64 (Ubuntu 24.04):
+* Download and install the binary package of the [latest release](https://github.com/recipe/bamboohr-slack-bot/releases/latest)
+  for your operating system and architecture. For example, for Linux amd64 (Ubuntu 24.04):
 
 ```bash
-curl -L -O https://github.com/recipe/bamboohr-slack-bot/releases/download/1.0.0/bamboohr-slack-bot_1.0.0_linux_amd64.tar.gz
-tar -xvzf bamboohr-slack-bot_1.0.0_linux_amd64.tar.gz
-cd bamboohr-slack-bot_1.0.0
-dpkg -i bamboohr-slack-bot_1.0.0-1.deb
+curl -L -O https://github.com/recipe/bamboohr-slack-bot/releases/download/1.1.0/bamboohr-slack-bot_1.0.0_linux_amd64.tar.gz
+tar -xvzf bamboohr-slack-bot_1.1.0_linux_amd64.tar.gz
+cd bamboohr-slack-bot_1.1.0
+dpkg -i bamboohr-slack-bot_1.1.0-1.deb
 ```
 
 Configuration
